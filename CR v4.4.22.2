@@ -493,12 +493,6 @@ pbSlPct = input.float(
      minval = 0.05,
      group  = grpExitCore)
 
-pbSlPctBigTrend = input.float(
-     title  = "PB Hard SL % (Big Trend)",
-     defval = 3.5,
-     minval = 0.5,
-     step   = 0.1)
-
 pbLockPct = input.float(
      0.10,
      "PB Profit Lock (%) After Full Arm",
@@ -2409,19 +2403,10 @@ pbMfePct = (
 // ─────────────────────────────────────────────────────────────────────────────
 // 0) Hard SL baseline (risk cap)
 // ─────────────────────────────────────────────────────────────────────────────
-//pbHardSlPrice = (
- //    pbInPos
- //    ? (pbAvg * (1.0 - (pbSlPct / 100.0)))
- //    : na)
-
-pbHardSlPctUse = (
-     bigTrend
-     ? pbSlPctBigTrend
-     : pbSlPct)
 
 pbHardSlPrice = (
      pbInPos
-     ? (pbAvg * (1.0 - (pbHardSlPctUse / 100.0)))
+     ? (pbAvg * (1.0 - (pbSlPct / 100.0)))
      : na)
 
 
