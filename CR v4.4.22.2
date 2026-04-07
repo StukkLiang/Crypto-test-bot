@@ -85,177 +85,172 @@ strategy(
 
 // =======[BLOCK: INPUTS_BEGIN]=======
 // ─────────────────────────────────────────────────────────────────────────────
-// INPUTS — regrouped for cleaner tuning / diagnostics wo_rkflow
+// INPUTS — housekeeping regroup for cleaner tuning / maintenance
 // NOTE:
 // - Variable names are unchanged
-// - Only group names / display titles were cleaned up
-// - Keep group strings defined ONCE
+// - Defaults are unchanged
+// - Logic is unchanged
+// - Only group organization / display labels are cleaned up
 // ─────────────────────────────────────────────────────────────────────────────
 
 // =======[INPUT_GROUPS]=======
-grpCoreTrend   = "Core Trend Context"
-grpRegime      = "Regime Filters (Flat / Compression / Drift)"
-grpPBCore      = "PB Entry – Core"
-grpPBReclaim   = "PB Entry – Reclaim / Confirm"
-grpPBRsi       = "PB Entry – RSI / Braid / Compression"
-grpPBImpulse   = "PB Entry – Impulse / EMA Separation"
-
-grpCont        = "CONT Entry – Continuation"
-grpAdd         = "ADDON – Press Winners"
-
-grpExitCore    = "Exits – Core Risk / Arm"
-grpExitGate    = "Exits – EMA Gate"
-grpExitFlip    = "Exits – EMA Flip"
-grpExitGrad    = "Exits – Graduation"
-grpExitPP      = "Exits – Profit Protect / Trail"
-grpExitImp     = "Exits – Impulse Decay"
-
-grpDiagCore    = "Diagnostics – CORE / LOSS / PATHS"
-grpDiagRoute   = "Diagnostics – Entry Routing"
-grpViz         = "Visuals / Debug"
+grpCore        = "CORE"
+grpTrend       = "TREND / REGIME"
+grpPullbackA   = "PB_PULLBACK A — Core"
+grpPullbackB   = "PB_PULLBACK B — Reclaim / Confirm"
+grpPullbackC   = "PB_PULLBACK C — RSI / Braid / Compression"
+grpPullbackD   = "PB_PULLBACK D — Impulse / EMA Separation"
+grpCont        = "CONT ENGINE"
+grpAddonA      = "ADDON A — Signals / Trigger"
+grpAddonB      = "ADDON B — Filters / Momentum"
+grpExitA       = "EXITS A — Core Risk / Arm"
+grpExitB       = "EXITS B — EMA Gate / EMA Flip"
+grpExitC       = "EXITS C — Graduation / Profit Protect / Impulse Decay"
+grpDiag        = "DIAGNOSTICS"
+grpVisual      = "VISUALS / DEBUG"
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CORE TREND CONTEXT
+// CORE
 // ─────────────────────────────────────────────────────────────────────────────
 lenFast = input.int(
      20,
      "Fast EMA Length",
      minval = 1,
-     group  = grpCoreTrend)
+     group  = grpCore)
 
 lenMid = input.int(
      50,
      "Mid EMA Length",
      minval = 1,
-     group  = grpCoreTrend)
+     group  = grpCore)
 
 lenSlow = input.int(
      200,
      "Slow EMA Length (Trend)",
      minval = 1,
-     group  = grpCoreTrend)
+     group  = grpCore)
 
 rsiLen = input.int(
      14,
      "RSI Length",
      minval = 1,
-     group  = grpCoreTrend)
+     group  = grpCore)
 
 atrLen = input.int(
      14,
      "ATR Length",
      minval = 1,
-     group  = grpCoreTrend)
+     group  = grpCore)
 
 slopeBars = input.int(
      8,
      "Slope Lookback Bars",
      minval = 1,
-     group  = grpCoreTrend)
+     group  = grpCore)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// REGIME FILTERS (shared context / anti-chop)
+// TREND / REGIME
 // ─────────────────────────────────────────────────────────────────────────────
 flatSlopeMaxAtr = input.float(
      0.04,
      "Flat Slope Max (ATR-Norm)",
      step  = 0.01,
-     group = grpRegime)
+     group = grpTrend)
 
 compressMaxAtr = input.float(
      0.45,
      "Compressed Structure Max (ATR-Norm)",
      step  = 0.05,
-     group = grpRegime)
+     group = grpTrend)
 
 earlySlopeMinAtr = input.float(
      0.02,
      "Early Trend: Slow EMA Slope Min (ATR-Norm)",
      step   = 0.01,
      minval = 0.00,
-     group  = grpRegime)
+     group  = grpTrend)
 
 earlyDistMinAtr = input.float(
      0.10,
      "Early Trend: Close Above Slow EMA Min (ATR)",
      step   = 0.05,
      minval = 0.00,
-     group  = grpRegime)
+     group  = grpTrend)
 
 impulseSepMinAtr = input.float(
      0.18,
      "Impulse Context: Min EMA Separation (ATR)",
      step   = 0.01,
      minval = 0.00,
-     group  = grpRegime)
+     group  = grpTrend)
 
 midDriftSlopeMinAtr = input.float(
      0.02,
      "Mid-Drift: Mid EMA Slope Min (ATR-Norm)",
      step   = 0.01,
      minval = 0.00,
-     group  = grpRegime)
+     group  = grpTrend)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PB ENTRY — CORE
+// PB_PULLBACK A — Core
 // ─────────────────────────────────────────────────────────────────────────────
 enablePB = input.bool(
      true,
      "Enable PB Entry Engine",
-     group = grpPBCore)
+     group = grpPullbackA)
 
 pbUseMidTouch = input.bool(
      true,
      "PB Touch Uses Mid EMA",
-     group = grpPBCore)
+     group = grpPullbackA)
 
 pbUseFastTouch = input.bool(
      true,
      "PB Touch Uses Fast EMA",
-     group = grpPBCore)
+     group = grpPullbackA)
 
 pbCooldownBars = input.int(
      6,
      "PB Cooldown Bars After Exit",
      minval = 0,
-     group  = grpPBCore)
+     group  = grpPullbackA)
 
 pbFsCompressAtrMult = input.float(
      0.25,
      "PB BASE: Fast–Slow Compression Threshold (ATR)",
      step  = 0.05,
-     group = grpPBCore)
+     group = grpPullbackA)
 
 pbFsEscapeAtrMult = input.float(
      0.35,
      "PB BASE: Fast–Slow Escape Threshold (ATR)",
      step  = 0.05,
-     group = grpPBCore)
+     group = grpPullbackA)
 
 pbMidSlowSepAtrMult = input.float(
      0.6,
      "PB BASE: Mid–Slow EMA Separation Min (ATR)",
      step  = 0.05,
-     group = grpPBCore)
+     group = grpPullbackA)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PB ENTRY — RECLAIM / CONFIRM
+// PB_PULLBACK B — Reclaim / Confirm
 // ─────────────────────────────────────────────────────────────────────────────
 pbReclaimMode = input.string(
      "Close>Fast",
      "PB Reclaim Trigger",
      options = ["Close>Fast", "CrossOverFast"],
-     group   = grpPBReclaim)
+     group   = grpPullbackB)
 
 pbReclaimWindowBars = input.int(
      6,
      "PB Reclaim Window (Bars)",
      minval = 1,
-     group  = grpPBReclaim)
+     group  = grpPullbackB)
 
 pbReclaimBufAtrMult = input.float(
      title  = "PB Reclaim Buffer (ATR Mult)",
@@ -263,7 +258,7 @@ pbReclaimBufAtrMult = input.float(
      minval = 0.00,
      maxval = 0.20,
      step   = 0.01,
-     group  = grpPBReclaim)
+     group  = grpPullbackB)
 
 pbWeakConfirmExtraAtrMult = input.float(
      title  = "PB Weak Confirm Extra (ATR Mult)",
@@ -271,52 +266,52 @@ pbWeakConfirmExtraAtrMult = input.float(
      minval = 0.00,
      maxval = 3.00,
      step   = 0.05,
-     group  = grpPBReclaim)
+     group  = grpPullbackB)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PB ENTRY — RSI / BRAID / COMPRESSION
+// PB_PULLBACK C — RSI / Braid / Compression
 // ─────────────────────────────────────────────────────────────────────────────
 pbBraidUseGate = input.bool(
      true,
      "PB BASE: Enable Braid × RSI Stall Gate",
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbBraidSepAtrMax = input.float(
      0.25,
      "Braid: Max EMA Separation (ATR)",
      step  = 0.05,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbBraidSlopeAtrMax = input.float(
      0.12,
      "Braid: Max EMA Slope (ATR)",
      step  = 0.01,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbRsiStallLo = input.float(
      45.0,
      "RSI Stall Lower Bound",
      step  = 0.5,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbRsiStallHi = input.float(
      60.0,
      "RSI Stall Upper Bound",
      step  = 0.5,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbRsiSlopeLen = input.int(
      5,
      "RSI Slope Lookback",
      minval = 1,
-     group  = grpPBRsi)
+     group  = grpPullbackC)
 
 pbRsiSlopeMax = input.float(
      0.0,
      "RSI Stall Raw Slope Max",
      step  = 0.1,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbRsiNormLen = input.int(
      title  = "RSI Norm Length (Stdev)",
@@ -324,7 +319,7 @@ pbRsiNormLen = input.int(
      minval = 5,
      maxval = 50,
      step   = 1,
-     group  = grpPBRsi)
+     group  = grpPullbackC)
 
 pbRsiStallSlopeNormMax = input.float(
      title  = "RSI Stall Slope Max (RSI-Norm)",
@@ -332,7 +327,7 @@ pbRsiStallSlopeNormMax = input.float(
      minval = 0.05,
      maxval = 2.00,
      step   = 0.05,
-     group  = grpPBRsi)
+     group  = grpPullbackC)
 
 pbRsiWeakSlopeNormMax = input.float(
      title  = "RSI Weak Slope Max (RSI-Norm)",
@@ -340,52 +335,52 @@ pbRsiWeakSlopeNormMax = input.float(
      minval = 0.05,
      maxval = 2.00,
      step   = 0.05,
-     group  = grpPBRsi)
+     group  = grpPullbackC)
 
 pbBaseUseRsiNormGate = input.bool(
      title  = "PB BASE: Enable RSI Norm Gate",
      defval = true,
-     group  = grpPBRsi)
+     group  = grpPullbackC)
 
 pbBaseRsiNormGateMode = input.string(
      title   = "PB BASE: RSI Norm Gate Mode",
      defval  = "OR (block if either weak)",
      options = ["OR (block if either weak)", "AND (block only if both weak)"],
-     group   = grpPBRsi)
+     group   = grpPullbackC)
 
 pbRsiWeakDistMax = input.float(
      6.0,
      "Diag: RSI Weak Distance From 50 Max",
      step  = 0.5,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbCompSepAtrMaxDiag = input.float(
      0.25,
      "Diag: EMA Compression MinSep/ATR Max",
      step  = 0.05,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 pbCompSlopeAtrMaxDiag = input.float(
      0.20,
      "Diag: EMA Compression MaxSlope/ATR Max",
      step  = 0.05,
-     group = grpPBRsi)
+     group = grpPullbackC)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PB ENTRY — IMPULSE / EMA SEPARATION
+// PB_PULLBACK D — Impulse / EMA Separation
 // ─────────────────────────────────────────────────────────────────────────────
 pbEmaSepAtrMult = input.float(
      0.30,
      "PB BASE: Fast–Mid EMA Separation Min (ATR)",
      step  = 0.05,
-     group = grpPBImpulse)
+     group = grpPullbackD)
 
 pbImpulseSlopeAtrMult = input.float(
      0.20,
      "PB BASE: Impulse Slope Min (ATR)",
      step  = 0.01,
-     group = grpPBImpulse)
+     group = grpPullbackD)
 
 pbEmaSepAtrMultAddon = input.float(
      title  = "PB ADD-ON: Fast–Mid EMA Separation Min (ATR)",
@@ -393,11 +388,11 @@ pbEmaSepAtrMultAddon = input.float(
      minval = 0.05,
      maxval = 1.00,
      step   = 0.01,
-     group  = grpPBImpulse)
+     group  = grpPullbackD)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONT ENTRY — CONTINUATION
+// CONT ENGINE
 // ─────────────────────────────────────────────────────────────────────────────
 enableCont = input.bool(
      false,
@@ -421,408 +416,421 @@ contEnabled = (
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ADDON — PRESS WINNERS
+// ADDON A — Signals / Trigger
 // ─────────────────────────────────────────────────────────────────────────────
 enableAddOns = input.bool(
      true,
      "Enable ADDON Engine",
-     group = grpAdd)
+     group = grpAddonA)
 
 maxAddOns = input.int(
      6,
      "Max ADDON Count",
      minval = 0,
      maxval = 10,
-     group  = grpAdd)
+     group  = grpAddonA)
 
 addOnCooldownBars = input.int(
      2,
      "ADDON Cooldown Bars",
      minval = 0,
-     group  = grpAdd)
+     group  = grpAddonA)
 
 addOnRequireProfitPct = input.float(
      0.20,
      "ADDON: Min Profit % Before Add",
      step   = 0.05,
      minval = 0.00,
-     group  = grpAdd)
+     group  = grpAddonA)
 
 addOnRequireMfePct = input.float(
-     1.00,
+     1.0,
      "ADDON: Min MFE % Before Add",
      step   = 0.05,
      minval = 0.00,
-     group  = grpAdd)
+     group  = grpAddonA)
 
+addOnTouchWindowBars = input.int(
+     12,
+     "ADDON Touch Window (Bars)",
+     minval = 1,
+     group  = grpAddonA)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDON B — Filters / Momentum
+// ─────────────────────────────────────────────────────────────────────────────
 bigTrendSlopeMinAtr = input.float(
      0.06,
      "ADDON: Big Trend Slow EMA Slope Min (ATR-Norm)",
      step   = 0.01,
      minval = 0.00,
-     group  = grpAdd)
+     group  = grpAddonB)
 
 bigTrendDistMinAtr = input.float(
      0.60,
      "ADDON: Big Trend Close Above Slow EMA Min (ATR)",
      step   = 0.10,
      minval = 0.00,
-     group  = grpAdd)
-
-addOnTouchWindowBars = input.int(
-     12,
-     "ADDON Touch Window (Bars)",
-     minval = 1,
-     group  = grpAdd)
+     group  = grpAddonB)
 
 addOnUseMomentum = input.bool(
      true,
      "ADDON: Enable Momentum Trigger",
-     group = grpAdd)
+     group = grpAddonB)
 
 addOnMomentumAtrMult = input.float(
      0.80,
      "ADDON: Momentum Distance Above Fast EMA (ATR)",
      step   = 0.05,
      minval = 0.05,
-     group  = grpAdd)
+     group  = grpAddonB)
 
 addOnBreakoutLookback = input.int(
      3,
      "ADDON: Momentum Breakout Lookback",
      minval = 1,
-     group  = grpAdd)
+     group  = grpAddonB)
 
 addOnRearmAtrMult = input.float(
      0.50,
      "ADDON: Momentum Re-Arm Spacing (ATR)",
      step   = 0.05,
      minval = 0.00,
-     group  = grpAdd)
+     group  = grpAddonB)
 
+addOnMaxConcurrent = input.int(
+     4,
+     "ADDON: Max Concurrent Adds",
+     minval = 1,
+     maxval = 10,
+     group  = grpAddonB)
+
+addOnCeilingFastAtrMult = input.float(
+     2.20,
+     "ADDON: Ceiling Max Dist Above Fast EMA (ATR)",
+     step   = 0.05,
+     minval = 0.20,
+     group  = grpAddonB)
+
+addOnCeilingMidAtrMult = input.float(
+     3.20,
+     "ADDON: Ceiling Max Dist Above Mid EMA (ATR)",
+     step   = 0.05,
+     minval = 0.20,
+     group  = grpAddonB)
+
+addOnCeilingUseMidConfirm = input.bool(
+     true,
+     "ADDON: Ceiling Requires Mid EMA Confirm",
+     group = grpAddonB)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXITS — CORE RISK / ARM
+// EXITS A — Core Risk / Arm
 // ─────────────────────────────────────────────────────────────────────────────
 pbTpPct = input.float(
      1.50,
      "PB Full-Arm Trigger (%)",
      step   = 0.05,
      minval = 0.05,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbSlPct = input.float(
      2.00,
      "PB Hard Stop (%)",
      step   = 0.05,
      minval = 0.05,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbLockPct = input.float(
      0.10,
      "PB Profit Lock (%) After Full Arm",
      step   = 0.05,
      minval = 0.00,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbTrailPct = input.float(
      1.00,
      "PB Percent Trail (%) After Full Arm",
      step   = 0.10,
      minval = 0.10,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbTrailAtrMult = input.float(
      1.50,
      "PB ATR Trail Mult After Full Arm",
      step   = 0.10,
      minval = 0.10,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbSoftArmPct = input.float(
      0.80,
      "Soft Arm Trigger (%)",
      step   = 0.05,
      minval = 0.05,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbSoftTrailPct = input.float(
      1.40,
      "Soft Arm Percent Trail (%)",
      step   = 0.10,
      minval = 0.10,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbSoftTrailAtrMult = input.float(
      2.00,
      "Soft Arm ATR Trail Mult",
      step   = 0.10,
      minval = 0.10,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 pbArmMode = input.string(
      "MFE_AND_CLOSE",
      "Full Arm Mode",
      options = ["MFE_ONLY", "MFE_AND_CLOSE", "MFE_AND_CLOSE_ABOVE_FAST"],
-     group   = grpExitCore)
+     group   = grpExitA)
 
 pbArmBufferPct = input.float(
      0.10,
      "Full Arm Buffer (%) Above Trigger",
      step   = 0.05,
      minval = 0.00,
-     group  = grpExitCore)
+     group  = grpExitA)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXITS — EMA GATE
+// EXITS B — EMA Gate / EMA Flip
 // ─────────────────────────────────────────────────────────────────────────────
 enableExitGate = input.bool(
      true,
      "Enable EMA-Aware Exit Gate",
-     group = grpExitGate)
+     group = grpExitB)
 
 catAtrMult = input.float(
      2.50,
      "Catastrophic Stop ATR Mult",
      step   = 0.10,
      minval = 0.10,
-     group  = grpExitGate)
+     group  = grpExitB)
 
 gateRequireCloseMid = input.bool(
      true,
      "EMA Gate Requires Close > Mid EMA",
-     group = grpExitGate)
+     group = grpExitB)
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EXITS — EMA FLIP
-// ─────────────────────────────────────────────────────────────────────────────
 enableEmaFlipExit = input.bool(
      true,
      "Enable EMA Flip Exit",
-     group = grpExitFlip)
+     group = grpExitB)
 
 emaFlipSource = input.string(
      "Close<Fast",
      "EMA Flip Condition",
      options = ["Close<Fast", "Close<Mid"],
-     group   = grpExitFlip)
+     group   = grpExitB)
 
 emaFlipProfitMaxPct = input.float(
      0.50,
      "EMA Flip Allowed Only If Profit % ≤",
      step   = 0.05,
      minval = -5.00,
-     group  = grpExitFlip)
+     group  = grpExitB)
 
 emaFlipDisableIfMfePct = input.float(
      1.50,
      "Disable EMA Flip If MFE % ≥",
      step   = 0.05,
      minval = 0.00,
-     group  = grpExitFlip)
+     group  = grpExitB)
 
 emaFlipRequireTrendWeak = input.bool(
      true,
      "EMA Flip Requires Fast ≤ Mid",
-     group = grpExitFlip)
+     group = grpExitB)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXITS — GRADUATION
+// EXITS C — Graduation / Profit Protect / Impulse Decay
 // ─────────────────────────────────────────────────────────────────────────────
 enableGraduation = input.bool(
      true,
      "Enable Graduation Ladder",
-     group = grpExitGrad)
+     group = grpExitC)
 
 gradBeMfePct = input.float(
      1.20,
      "Activate BE Floor When MFE % ≥",
      step   = 0.05,
      minval = 0.00,
-     group  = grpExitGrad)
+     group  = grpExitC)
 
 gradBeBufferPct = input.float(
      0.05,
      "BE Buffer (%)",
      step   = 0.01,
      minval = 0.00,
-     group  = grpExitGrad)
+     group  = grpExitC)
 
 gradTrailStartMfePct = input.float(
      2.50,
      "Allow Trailing Only When MFE % ≥",
      step   = 0.05,
      minval = 0.10,
-     group  = grpExitGrad)
+     group  = grpExitC)
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EXITS — PROFIT PROTECT / TRAIL
-// ─────────────────────────────────────────────────────────────────────────────
 enableProfitProtect = input.bool(
      true,
      "Enable Profit Protect",
-     group = grpExitPP)
+     group = grpExitC)
 
 ppStartMfePct = input.float(
      1.80,
      "PP Start MFE %",
      step  = 0.1,
-     group = grpExitPP)
+     group = grpExitC)
 
 ppFullMfePct = input.float(
      2.50,
      "PP Full Lock MFE %",
      step  = 0.1,
-     group = grpExitPP)
+     group = grpExitC)
 
 ppBeBufferPct = input.float(
      0.05,
      "PP BE Buffer %",
      step  = 0.01,
-     group = grpExitPP)
+     group = grpExitC)
 
 ppLockMinPct = input.float(
      0.20,
      "PP Lock Min %",
      step  = 0.05,
-     group = grpExitPP)
+     group = grpExitC)
 
 ppLockMaxPct = input.float(
      1.20,
      "PP Lock Max %",
      step  = 0.05,
-     group = grpExitPP)
+     group = grpExitC)
 
 enablePpTrail = input.bool(
      true,
      "Enable PP Trail",
-     group = grpExitPP)
+     group = grpExitC)
 
 ppTrailStartMfePct = input.float(
      3.00,
      "PP Trail Start MFE %",
      step  = 0.1,
-     group = grpExitPP)
+     group = grpExitC)
 
 ppTrailAtrMult = input.float(
      2.00,
      "PP Trail ATR Mult",
      step  = 0.1,
-     group = grpExitPP)
+     group = grpExitC)
 
 ppTrailPct = input.float(
      1.20,
      "PP Trail Percent %",
      step  = 0.1,
-     group = grpExitPP)
+     group = grpExitC)
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EXITS — IMPULSE DECAY
-// ─────────────────────────────────────────────────────────────────────────────
 enableImpulseDecayExit = input.bool(
      true,
      "Enable Impulse-Decay Exit",
-     group = grpExitImp)
+     group = grpExitC)
 
 impNoNewHighBars = input.int(
      6,
      "No New High Bars",
      minval = 1,
-     group  = grpExitImp)
+     group  = grpExitC)
 
 impMaxLossPct = input.float(
      0.25,
      "Allow Impulse-Decay Exit If Loss % ≤",
      step  = 0.05,
-     group = grpExitImp)
+     group = grpExitC)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DIAGNOSTICS — CORE / LOSS / PATHS
+// DIAGNOSTICS
 // ─────────────────────────────────────────────────────────────────────────────
 dmgMfeMinPct = input.float(
      1.00,
      "Damaged Winner If MFE % ≥",
      step   = 0.05,
      minval = 0.00,
-     group  = grpDiagCore)
+     group  = grpDiag)
 
 dmgExitCeilPct = input.float(
      0.20,
      "Damaged Winner If Exit % ≤",
      step  = 0.05,
-     group = grpDiagCore)
+     group = grpDiag)
 
 showDamageTable = input.bool(
      true,
      "Show Metrics Table",
-     group = grpDiagCore)
+     group = grpDiag)
 
 showDamagedMarks = input.bool(
      true,
      "Mark Damaged Winners On Exit Bar",
-     group = grpDiagCore)
+     group = grpDiag)
 
 dmgLabelYOffsetAtr = input.float(
      0.20,
      "Damaged Label Y Offset (ATR)",
      step   = 0.05,
      minval = 0.00,
-     group  = grpDiagCore)
+     group  = grpDiag)
 
 distMicroUsd = input.float(
      0.50,
      "Micro P&L Threshold (Abs USD)",
      step   = 0.10,
      minval = 0.00,
-     group  = grpDiagCore)
+     group  = grpDiag)
 
 distBigWinUsd = input.float(
      5.00,
      "Big Win Threshold (USD)",
      step   = 0.50,
      minval = 0.00,
-     group  = grpDiagCore)
+     group  = grpDiag)
 
 distBigLossUsd = input.float(
      5.00,
      "Big Loss Threshold (USD)",
      step   = 0.50,
      minval = 0.00,
-     group  = grpDiagCore)
+     group  = grpDiag)
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DIAGNOSTICS — ENTRY ROUTING
-// ─────────────────────────────────────────────────────────────────────────────
 diagTrackBlkToCont = input.bool(
      title  = "Track Blocked BASE → CONT",
      defval = true,
-     group  = grpDiagRoute)
+     group  = grpDiag)
 
 diagBlkToContWinBars = input.int(
      title  = "Blocked BASE → CONT Window (Bars)",
      defval = 3,
      minval = 1,
      maxval = 50,
-     group  = grpDiagRoute)
+     group  = grpDiag)
 
 diagTrackBlkToBaseDelay = input.bool(
      title  = "Track Blocked BASE → BASE Later",
      defval = true,
-     group  = grpDiagRoute)
+     group  = grpDiag)
 
 diagBlkToBaseWinBars = input.int(
      title  = "Blocked BASE → BASE Window (Bars)",
      defval = 3,
      minval = 1,
      maxval = 50,
-     group  = grpDiagRoute)
+     group  = grpDiag)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -831,22 +839,22 @@ diagBlkToBaseWinBars = input.int(
 showMarks = input.bool(
      true,
      "Show Entry / Exit Markers",
-     group = grpViz)
+     group = grpVisual)
 
 showNoTradeBg = input.bool(
      true,
      "Show No-Trade Background",
-     group = grpViz)
+     group = grpVisual)
 
 showGateBg = input.bool(
      false,
      "Show Gate-Active Background",
-     group = grpViz)
+     group = grpVisual)
 
 showEntryDebug = input.bool(
      false,
      "Debug: Show Raw PB Entry Dots",
-     group = grpViz)
+     group = grpVisual)
 
 
 // =======[BLOCK: ENTRY_IDS_BEGIN]=======
@@ -1790,40 +1798,38 @@ plotshape(dbgWin and contSignalNow, title="CONT signal", style=shape.triangleup,
 
 // =======[BLOCK: ADDON_SIGNAL_BEGIN]=======
 // Step 3 – Add-On Engine (press winners)
-// TEMP COMPAT VERSION:
-// - uses addOnCount instead of activeAddSlots until rolling-slot allocation is wired in ENTRY_ORCH
-// - temporary in-block tuners added for momentum ceiling + volatility-scaled pyramiding
+// Phase A:
+// - add ceiling / extension awareness
+// - reduce concurrent adds via input instead of hardcoded 4
+// - keep compatibility architecture for now
+// - rolling ladder / slot reuse comes later
 
 // ─────────────────────────────────────────
 // ADDON state
 // ─────────────────────────────────────────
-var bool  pbAddOnCond          = false
-var int   addOnCount           = 0
-var float lastAddEntryRefPrice = na
+var bool pbAddOnCond = false
+var int  addOnCount  = 0
 
 // ADDON funnel diagnostics
-var int addCandCnt              = 0
-var int addBigTrendOkCnt        = 0
-var int addImpulseOkCnt         = 0
-var int addSepOkCnt             = 0
-var int addTouchRecentOkCnt     = 0
-var int addMomentumOkCnt        = 0
-var int addTriggerOkCnt         = 0
-var int addReclaimOkCnt         = 0
-var int addProfitOkCnt          = 0
-var int addMfeOkCnt             = 0
-var int addRoomOkCnt            = 0
-var int addCooldownOkCnt        = 0
-var int addChopOkCnt            = 0
-var int addFinalCondCnt         = 0
-var int addMomentumCeilingOkCnt = 0
-var int addVolBoost1Cnt         = 0
-var int addVolBoost2Cnt         = 0
+var int addCandCnt          = 0
+var int addBigTrendOkCnt    = 0
+var int addImpulseOkCnt     = 0
+var int addSepOkCnt         = 0
+var int addTouchRecentOkCnt = 0
+var int addReclaimOkCnt     = 0
+var int addProfitOkCnt      = 0
+var int addMfeOkCnt         = 0
+var int addCeilingOkCnt     = 0
+var int addRoomOkCnt        = 0
+var int addCooldownOkCnt    = 0
+var int addChopOkCnt        = 0
+var int addFinalCondCnt     = 0
 
 // ADDON memory
 var int lastAddOnBar         = na
 var int lastAddTouchBar      = na
 var int lastAddMicroResetBar = na
+var float lastAddEntryRefPrice = na
 
 // Reset memory when flat
 if not pbInPos
@@ -1832,15 +1838,6 @@ if not pbInPos
     lastAddTouchBar := na
     lastAddMicroResetBar := na
     lastAddEntryRefPrice := na
-
-// ─────────────────────────────────────────
-// TEMP in-block tuners
-// (later we can externalize these to INPUTS)
-// ─────────────────────────────────────────
-addOnMomentumCeilingAtr = 3.00
-addOnVolScaleLen        = 50
-addOnVolBoost1Ratio     = 1.15
-addOnVolBoost2Ratio     = 1.35
 
 // Local helpers
 addOnProfitPct = (
@@ -1858,7 +1855,18 @@ addOnMfePct = (
      ? ((pbHighWater - pbAvg) / pbAvg) * 100.0
      : na)
 
-// Pullback-touch model
+// Distance / extension diagnostics
+addOnDistFastAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? ((close - emaFast) / atrSafe)
+     : na)
+
+addOnDistMidAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? ((close - emaMid) / atrSafe)
+     : na)
+
+// Broaden ADDON touch detection
 addOnTouchNow = (
      trendUp
  and bullStack
@@ -1866,7 +1874,8 @@ addOnTouchNow = (
       touchMid
       or touchFast
       or (low <= (emaFast + atrSafe * 0.30))
-      or (close <= (emaFast + atrSafe * 0.30)) ))
+      or (close <= (emaFast + atrSafe * 0.30))
+     ))
 
 if addOnTouchNow
     lastAddTouchBar := bar_index
@@ -1895,76 +1904,6 @@ addOnTouchedRecently = (
      addOnTouchRecent
  or addOnMicroResetRecent)
 
-fastSlopeAtr_local = f_slopeAtr(emaFast, slopeBars, atrSafe)
-
-hasRealImpulse = (
-     hasImpulse
- and (not na(fastSlopeAtr_local))
- and (fastSlopeAtr_local >= earlySlopeMinAtr)
- and (not midEmaDriftChurn))
-
-// Momentum model
-addOnMomentumDistAtr = (
-     (atrSafe > 0)
-     ? ((close - emaFast) / atrSafe)
-     : na)
-
-addOnMomentumDistOk = (
-     pbInPos
- and (not na(addOnMomentumDistAtr))
- and (addOnMomentumDistAtr >= addOnMomentumAtrMult))
-
-addOnMomentumCeilingOk = (
-     pbInPos
- and (not na(addOnMomentumDistAtr))
- and (addOnMomentumDistAtr <= addOnMomentumCeilingAtr))
-
-addOnBreakoutRef = ta.highest(high, addOnBreakoutLookback)[1]
-
-addOnBreakoutOk = (
-     pbInPos
- and (not na(addOnBreakoutRef))
- and (close > addOnBreakoutRef))
-
-addOnMomentumSpacingOk = (
-     na(lastAddEntryRefPrice)
-     or (close >= (lastAddEntryRefPrice + atrSafe * addOnRearmAtrMult)))
-
-// Volatility-scaled pyramiding
-addOnAtrBase = ta.sma(atrSafe, addOnVolScaleLen)
-
-addOnVolRatio = (
-     (not na(addOnAtrBase))
- and (addOnAtrBase > 0)
-     ? (atrSafe / addOnAtrBase)
-     : na)
-
-addOnVolBoost = (
-          (bigTrend and hasRealImpulse and (not na(addOnVolRatio)))
-          ? (addOnVolRatio >= addOnVolBoost2Ratio ? 2 :
-          addOnVolRatio >= addOnVolBoost1Ratio ? 1 : 0)
-          : 0
-          )
-
-addOnDynMax = (
-     maxAddOns + addOnVolBoost)
-
-addOnMomentumRoomOk = (
-     addOnCount < addOnDynMax)
-
-addOnMomentumOk = (
-     addOnUseMomentum
- and addOnMomentumDistOk
- and addOnMomentumCeilingOk
- and addOnBreakoutOk
- and addOnMomentumSpacingOk
- and addOnMomentumRoomOk)
-
-// Combined trigger
-addOnTriggerOk = (
-     addOnTouchedRecently
- or addOnMomentumOk)
-
 inAddOnCooldown = (
      (not na(lastAddOnBar))
  and ((bar_index - lastAddOnBar) <= addOnCooldownBars))
@@ -1979,15 +1918,38 @@ addOnMfeOk = (
  and (not na(addOnMfePct))
  and (addOnMfePct >= addOnRequireMfePct))
 
+fastSlopeAtr_local = f_slopeAtr(emaFast, slopeBars, atrSafe)
+
+hasRealImpulse = (
+     hasImpulse
+ and (not na(fastSlopeAtr_local))
+ and (fastSlopeAtr_local >= earlySlopeMinAtr)
+ and (not midEmaDriftChurn))
+
 addOnReclaimOk = (
      close > emaFast)
+
+// Ceiling / extension gate
+addOnCeilingFastOk = (
+     (not na(addOnDistFastAtr))
+ and (addOnDistFastAtr <= addOnCeilingFastAtrMult))
+
+addOnCeilingMidOk = (
+     (not na(addOnDistMidAtr))
+ and (addOnDistMidAtr <= addOnCeilingMidAtrMult))
+
+addOnCeilingOk = (
+     addOnCeilingUseMidConfirm
+     ? (addOnCeilingFastOk and addOnCeilingMidOk)
+     : addOnCeilingFastOk)
 
 addCandNow = (
      enableAddOns
  and pbInPos)
 
+// Concurrent room gate (input-driven; compatibility version still uses addOnCount)
 addRoomOk = (
-     addOnCount < addOnDynMax)
+     addOnCount < addOnMaxConcurrent)
 
 addCooldownOk = (
      not inAddOnCooldown)
@@ -2010,21 +1972,6 @@ if addCandNow
                 if addOnTouchedRecently
                     addTouchRecentOkCnt += 1
 
-                if addOnMomentumCeilingOk
-                    addMomentumCeilingOkCnt += 1
-
-                if addOnVolBoost == 1
-                    addVolBoost1Cnt += 1
-
-                if addOnVolBoost >= 2
-                    addVolBoost2Cnt += 1
-
-                if addOnMomentumOk
-                    addMomentumOkCnt += 1
-
-                if addOnTriggerOk
-                    addTriggerOkCnt += 1
-
                     if addOnReclaimOk
                         addReclaimOkCnt += 1
 
@@ -2034,28 +1981,32 @@ if addCandNow
                             if addOnMfeOk
                                 addMfeOkCnt += 1
 
-                                if addRoomOk
-                                    addRoomOkCnt += 1
+                                if addOnCeilingOk
+                                    addCeilingOkCnt += 1
 
-                                    if addCooldownOk
-                                        addCooldownOkCnt += 1
+                                    if addRoomOk
+                                        addRoomOkCnt += 1
 
-                                        if addChopOk
-                                            addChopOkCnt += 1
+                                        if addCooldownOk
+                                            addCooldownOkCnt += 1
+
+                                            if addChopOk
+                                                addChopOkCnt += 1
 
 pbAddOnCond := (
      enableAddOns
- and pbInPos
- and bigTrend
- and hasRealImpulse
- and emaSepOkAddon
- and addOnTriggerOk
- and addOnReclaimOk
- and addOnProfitOk
- and addOnMfeOk
- and addRoomOk
- and (not inAddOnCooldown)
- and (not noTradeChop))
+     and pbInPos
+     and bigTrend
+     and hasRealImpulse
+     and emaSepOkAddon
+     and addOnTouchedRecently
+     and addOnReclaimOk
+     and addOnProfitOk
+     and addOnMfeOk
+     and addOnCeilingOk
+     and addRoomOk
+     and (not inAddOnCooldown)
+     and (not noTradeChop))
 
 if pbAddOnCond
     addFinalCondCnt += 1
@@ -3282,18 +3233,21 @@ pbAvgGiveback = (
 
 
 // =======[BLOCK: TABLES_BEGIN]=======
-// Tables (compact – attribution-first, no Strategy Report duplication)
-// Right side: PROFIT (top) + LOSS matrix (bottom) in ONE table (no overlap).
-// Left side : DIAG table (paged 2-col view; <= 21 rows per page) + row library preserved.
+// Tables (housekeeping pass 3)
+// Right side:
+//   - top-right    = CORE + PROFIT (always visible)
+//   - bottom-right = LOSS matrix
+// Left side:
+//   - paged DIAG table with consolidated pages
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DIAG page selector (keeps 2 columns, avoids “too tall” table)
+// DIAG page selector
 // ─────────────────────────────────────────────────────────────────────────────
 diagPage = input.string(
      title   = "DIAG Page",
-     defval  = "CORE",
-     options = ["CORE", "LATE_GATE", "PB_CAND", "EMA_COMP", "DONCH", "ADDON_A", "ADDON_B", "RM_LOWMFE", "RM_ALL", "LOSS", "PATHS"],
-     group   = "DIAG")
+     defval  = "PB_DIAG",
+     options = ["LATE_GATE", "PB_DIAG", "ADDON", "RM", "LOSS_PATHS"],
+     group   = grpDiag)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Formatting helpers
@@ -3313,11 +3267,9 @@ f_pctPts(x) =>
 f_usd(x) =>
     na(x) ? "na" : ("$" + str.tostring(math.round(x * 100.0) / 100.0))
 
-// "cnt | $abs" compact cell
 f_pair(cnt, usd) =>
     (f_int(cnt) + " | " + f_usd(usd))
 
-// safe fraction for counters: a/b (0..1)
 f_frac(cnt, tot) =>
     (
          (tot > 0)
@@ -3385,7 +3337,7 @@ f_entryLabel(eIdx) =>
        : "UNK")
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Profit accumulators (stateful, table-owned) — compact via array
+// Profit accumulators (stateful, table-owned)
 // idx: 0=PB_BASE, 1=CONT, 2=ADD, 3=UNK
 // ─────────────────────────────────────────────────────────────────────────────
 var float[] profUsd = array.new_float(4, 0.0)
@@ -3412,10 +3364,19 @@ if pbJustClosed and pbIsWin and (not na(pbExitPnlUsdNow))
 // ─────────────────────────────────────────────────────────────────────────────
 // Tables
 // ─────────────────────────────────────────────────────────────────────────────
-var table tRight = table.new(
+var table tTopRight = table.new(
+     position     = position.top_right,
+     columns      = 2,
+     rows         = 15,
+     frame_color  = color.black,
+     frame_width  = 1,
+     border_color = color.black,
+     border_width = 1)
+
+var table tLoss = table.new(
      position     = position.bottom_right,
      columns      = 6,
-     rows         = 12,
+     rows         = 6,
      frame_color  = color.black,
      frame_width  = 1,
      border_color = color.black,
@@ -3452,7 +3413,6 @@ f_hdr(_tbl, _c, _r, _t) =>
          text_color = color.white,
          bgcolor    = color.black)
 
-// DIAG row writer (returns next row index)
 f_row(_tbl, _r, _k, _v) =>
     f_cell(_tbl, 0, _r, _k)
     f_cell(_tbl, 1, _r, _v)
@@ -3460,56 +3420,62 @@ f_row(_tbl, _r, _k, _v) =>
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Render tables (last bar)
+// Render tables
 // ─────────────────────────────────────────────────────────────────────────────
 if (barstate.islastconfirmedhistory or barstate.islast)
 
-    table.clear(tRight, 0, 0, 5, 11)
-    table.clear(tDiag,  0, 0, 1, 21)
+    table.clear(tTopRight, 0, 0, 1, 14)
+    table.clear(tLoss,     0, 0, 5, 5)
+    table.clear(tDiag,     0, 0, 1, 21)
 
     // ========================================================================
-    // RIGHT TABLE – PROFIT (top)
+    // TOP-RIGHT TABLE — CORE + PROFIT
     // ========================================================================
-    f_hdr(tRight, 0, 0, "Entry")
-    f_hdr(tRight, 1, 0, "Profit $")
-    for c = 2 to 5
-        f_cell(tRight, c, 0, "")
+    f_hdr(tTopRight, 0, 0, "CORE / PROFIT")
+    f_hdr(tTopRight, 1, 0, "Value")
 
-    for i = 0 to 3
-        rr = (1 + i)
-        f_cell(tRight, 0, rr, f_profLabel(i))
-        f_cell(tRight, 1, rr, f_usd(array.get(profUsd, i)))
-
-    // spacer row 5
-    for c = 0 to 5
-        f_cell(tRight, c, 5, "")
+    rr = 1
+    rr := f_row(tTopRight, rr, "Damaged%",       f_pctFrac_0to1(pbDamagedRateFrac))
+    rr := f_row(tTopRight, rr, "Avg gvb%",       f_pctPts(pbAvgGiveback))
+    rr := f_row(tTopRight, rr, "PB_BASE Fills",  f_int(pbPullbackFillCnt))
+    rr := f_row(tTopRight, rr, "CONT Fills",     f_int(contFillCnt))
+    rr := f_row(tTopRight, rr, "ADD Fills",      f_int(addFillCnt))
+    rr := f_row(tTopRight, rr, "LowMFE SL PB",   f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
+    rr := f_row(tTopRight, rr, "LowMFE SL CONT", f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
+    rr := f_row(tTopRight, rr, "LowMFE SL ADD",  f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
+    rr := f_row(tTopRight, rr, "Dmg gvb$",       f_usd(pbDmgGivebackUsd))
+    rr := f_row(tTopRight, rr, "PB Profit $",    f_usd(array.get(profUsd, 0)))
+    rr := f_row(tTopRight, rr, "CONT Profit $",  f_usd(array.get(profUsd, 1)))
+    rr := f_row(tTopRight, rr, "ADD Profit $",   f_usd(array.get(profUsd, 2)))
+    rr := f_row(tTopRight, rr, "UNK Profit $",   f_usd(array.get(profUsd, 3)))
+    rr := f_row(tTopRight, rr, "Profit TOT $",   f_usd(array.get(profUsd, 0) + array.get(profUsd, 1) + array.get(profUsd, 2) + array.get(profUsd, 3)))
 
     // ========================================================================
-    // RIGHT TABLE – LOSS MATRIX (bottom)
+    // BOTTOM-RIGHT TABLE — LOSS MATRIX ONLY
     // ========================================================================
-    f_hdr(tRight, 0, 6, "Loss mx")
-    f_hdr(tRight, 1, 6, "SL")
-    f_hdr(tRight, 2, 6, "FLOOR")
-    f_hdr(tRight, 3, 6, "TRAIL")
-    f_hdr(tRight, 4, 6, "EMA")
-    f_hdr(tRight, 5, 6, "TOT")
+    f_hdr(tLoss, 0, 0, "Loss mx")
+    f_hdr(tLoss, 1, 0, "SL")
+    f_hdr(tLoss, 2, 0, "FLOOR")
+    f_hdr(tLoss, 3, 0, "TRAIL")
+    f_hdr(tLoss, 4, 0, "EMA")
+    f_hdr(tLoss, 5, 0, "TOT")
 
-    // rows 7..10 (eIdx=0..3)
+    // rows 1..4
     for e = 0 to 3
-        rr = (7 + e)
-        f_cell(tRight, 0, rr, f_entryLabel(e))
+        rr2 = (1 + e)
+        f_cell(tLoss, 0, rr2, f_entryLabel(e))
         for x = 0 to 3
-            f_cell(tRight, (1 + x), rr, f_pair(mxGetCnt(e, x), mxGetUsd(e, x)))
-        f_cell(tRight, 5, rr, f_pair(mxRowCnt(e), mxRowUsd(e)))
+            f_cell(tLoss, (1 + x), rr2, f_pair(mxGetCnt(e, x), mxGetUsd(e, x)))
+        f_cell(tLoss, 5, rr2, f_pair(mxRowCnt(e), mxRowUsd(e)))
 
-    // totals row 11
-    f_hdr(tRight, 0, 11, "TOT")
+    // totals row 5
+    f_hdr(tLoss, 0, 5, "TOT")
     for x = 0 to 3
-        f_cell(tRight, (1 + x), 11, f_pair(mxColCnt(x), mxColUsd(x)))
-    f_cell(tRight, 5, 11, f_pair(mxAllCnt(), mxAllUsd()))
+        f_cell(tLoss, (1 + x), 5, f_pair(mxColCnt(x), mxColUsd(x)))
+    f_cell(tLoss, 5, 5, f_pair(mxAllCnt(), mxAllUsd()))
 
     // ========================================================================
-    // DIAG TABLE (PAGED 2-COL VIEW) – keep <= 21 rows per page
+    // LEFT DIAG TABLE — consolidated pages
     // ========================================================================
     f_hdr(tDiag, 0, 0, str.format("Diag ({0})", diagPage))
     f_hdr(tDiag, 1, 0, "Value")
@@ -3517,75 +3483,36 @@ if (barstate.islastconfirmedhistory or barstate.islast)
     r = 1
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: CORE
-    // Daily-use health / version comparison
-    // ─────────────────────────────────────────────────────────────────────────
-    if diagPage == "CORE"
-        r := f_row(tDiag, r, "Damaged%",            f_pctFrac_0to1(pbDamagedRateFrac))
-        r := f_row(tDiag, r, "Avg gvb%",            f_pctPts(pbAvgGiveback))
-        r := f_row(tDiag, r, "Dmg gvb$",            f_usd(pbDmgGivebackUsd))
-        r := f_row(tDiag, r, "Closed Trades",       f_int(pbClosedTrades))
-        r := f_row(tDiag, r, "PB_BASE Fills",       f_int(pbPullbackFillCnt))
-        r := f_row(tDiag, r, "CONT Fills",          f_int(contFillCnt))
-        r := f_row(tDiag, r, "ADD Fills",           f_int(addFillCnt))
-        r := f_row(tDiag, r, "LowMFE SL PB_BASE",   f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
-        r := f_row(tDiag, r, "LowMFE SL CONT",      f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
-        r := f_row(tDiag, r, "LowMFE SL ADD",       f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
-        r := f_row(tDiag, r, "SL LowMFE cnt|$",     f_pair(lossHardSlLowMfeCnt,      lossHardSlLowMfeUsd))
-        r := f_row(tDiag, r, "SL HighMFE cnt|$",    f_pair(lossHardSlHighMfeCnt,     lossHardSlHighMfeUsd))
-
-    // ─────────────────────────────────────────────────────────────────────────
     // PAGE: LATE_GATE
-    // Specialized gate debug
     // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "LATE_GATE"
+    if diagPage == "LATE_GATE"
         minAtrStr = (
              str.tostring(pbLateReclaimMinAtrX100)
              + " | "
              + f_f2(pbLateReclaimMinAtr))
-        r := f_row(tDiag, r, "MinAtr x100|f",       minAtrStr)
-        r := f_row(tDiag, r, "Enabled",             str.tostring(pbLateGateEnabled))
-
-        r := f_row(tDiag, r, "CandPbBase",          f_int(dbgLate_candPbBase))
-        r := f_row(tDiag, r, "CandWeak",            f_int(dbgLate_candWeak))
-        r := f_row(tDiag, r, "CandHasRm",           f_int(dbgLate_candHasRm))
-        r := f_row(tDiag, r, "Blocked",             f_int(dbgLate_blocked))
-
-        r := f_row(tDiag, r, "BlkRate vs PbBase",   f_pctFrac_0to1(f_frac(dbgLate_blocked, dbgLate_candPbBase)))
-        r := f_row(tDiag, r, "BlkRate vs HasRm",    f_pctFrac_0to1(f_frac(dbgLate_blocked, dbgLate_candHasRm)))
-
-        r := f_row(tDiag, r, "rmNowAtr",            f_f2(pbLateRmNowAtr))
-        r := f_row(tDiag, r, "blockedNow",          str.tostring(pbLateBlockedNow))
-        r := f_row(tDiag, r, "CandWeak(+1bar)",     f_int(dbgLate_candWeakLag))
-
-        r := f_row(tDiag, r, "PBBlkCnt",            f_int(pbBaseBlockCnt))
-        r := f_row(tDiag, r, "Blk->CONT",           f_int(pbBlockToContCnt))
-        r := f_row(tDiag, r, "Blk->PB",             f_int(pbBlockToPbCnt))
-        r := f_row(tDiag, r, "Blk->Any",            f_int(pbBlockToAnyCnt))
-
-        blkToContRate = f_frac(pbBlockToContCnt, pbBaseBlockCnt)
-        blkToPbRate   = f_frac(pbBlockToPbCnt,   pbBaseBlockCnt)
-        blkToAnyRate  = f_frac(pbBlockToAnyCnt,  pbBaseBlockCnt)
-
-        r := f_row(tDiag, r, "Blk->PB %",          f_pctFrac_0to1(blkToPbRate))
-        r := f_row(tDiag, r, "Blk->Any %",         f_pctFrac_0to1(blkToAnyRate))
-
-        f_row(tDiag, r, "Blk->CONT %",             f_pctFrac_0to1(blkToContRate))
-
-        r := f_row(tDiag, r, "CandHasRmAll",       f_int(dbgLate_candHasRmAll))
-        r := f_row(tDiag, r, "BlkAll(<min)",       f_int(dbgLate_blockedAll))
-        r := f_row(tDiag, r, "PassAll(>=min)",     f_int(dbgLate_blockedAllGE))
-        rmAllStats = (
-             "min " + f_f2(dbgLate_allRmMin)
-             + " | avg " + f_f2(dbgLate_allRmAvg)
-             + " | max " + f_f2(dbgLate_allRmMax))
-        r := f_row(tDiag, r, "rmAll (min|avg|max)", rmAllStats)
+        r := f_row(tDiag, r, "MinAtr x100|f",      minAtrStr)
+        r := f_row(tDiag, r, "Enabled",            str.tostring(pbLateGateEnabled))
+        r := f_row(tDiag, r, "CandPbBase",         f_int(dbgLate_candPbBase))
+        r := f_row(tDiag, r, "CandWeak",           f_int(dbgLate_candWeak))
+        r := f_row(tDiag, r, "CandHasRm",          f_int(dbgLate_candHasRm))
+        r := f_row(tDiag, r, "Blocked",            f_int(dbgLate_blocked))
+        r := f_row(tDiag, r, "BlkRate vs PbBase",  f_pctFrac_0to1(f_frac(dbgLate_blocked, dbgLate_candPbBase)))
+        r := f_row(tDiag, r, "BlkRate vs HasRm",   f_pctFrac_0to1(f_frac(dbgLate_blocked, dbgLate_candHasRm)))
+        r := f_row(tDiag, r, "rmNowAtr",           f_f2(pbLateRmNowAtr))
+        r := f_row(tDiag, r, "blockedNow",         str.tostring(pbLateBlockedNow))
+        r := f_row(tDiag, r, "CandWeak(+1bar)",    f_int(dbgLate_candWeakLag))
+        r := f_row(tDiag, r, "PBBlkCnt",           f_int(pbBaseBlockCnt))
+        r := f_row(tDiag, r, "Blk->CONT",          f_int(pbBlockToContCnt))
+        r := f_row(tDiag, r, "Blk->PB",            f_int(pbBlockToPbCnt))
+        r := f_row(tDiag, r, "Blk->Any",           f_int(pbBlockToAnyCnt))
+        r := f_row(tDiag, r, "Blk->CONT %",        f_pctFrac_0to1(f_frac(pbBlockToContCnt, pbBaseBlockCnt)))
+        r := f_row(tDiag, r, "Blk->PB %",          f_pctFrac_0to1(f_frac(pbBlockToPbCnt, pbBaseBlockCnt)))
+        r := f_row(tDiag, r, "Blk->Any %",         f_pctFrac_0to1(f_frac(pbBlockToAnyCnt, pbBaseBlockCnt)))
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: PB_CAND
-    // Specialized PB candidate diagnostics
+    // PAGE: PB_DIAG
     // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "PB_CAND"
+    else if diagPage == "PB_DIAG"
         r := f_row(tDiag, r, "PB cand TOT",        f_int(pbBaseCandidateCnt))
         r := f_row(tDiag, r, "PB blocked",         f_int(pbBaseBlockedCnt))
         r := f_row(tDiag, r, "PB cand BRAID",      f_int(pbBaseCandEmaBraidCnt))
@@ -3593,112 +3520,71 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "PB cand B+S",        f_int(pbBaseCandBraidRsiCnt))
         r := f_row(tDiag, r, "PB cand SepOK",      f_int(pbBaseCandBraidSepOkCnt))
         r := f_row(tDiag, r, "PB cand SlpOK",      f_int(pbBaseCandBraidSlopeOkCnt))
+        r := f_row(tDiag, r, "EMA comp sep",       f_int(pbBaseCandEmaCompSepCnt))
+        r := f_row(tDiag, r, "EMA comp slp",       f_int(pbBaseCandEmaCompSlopeCnt))
+        r := f_row(tDiag, r, "EMA comp BOTH",      f_int(pbBaseCandEmaCompBothCnt))
+        r := f_row(tDiag, r, "Donch EXH",          f_int(pbBaseCandDonchExhCnt))
+        r := f_row(tDiag, r, "RSI+Donch",          f_int(pbBaseCandRsiDonchBothCnt))
+        r := f_row(tDiag, r, "PB entry B+S",       f_int(pbBaseEntryBraidRsiCnt))
         r := f_row(tDiag, r, "RSI weak dist%",     f_pctFrac_0to1(f_frac(pbBaseCandRsiWeakDistCnt,  pbBaseCandidateCnt)))
         r := f_row(tDiag, r, "RSI weak slp%",      f_pctFrac_0to1(f_frac(pbBaseCandRsiWeakSlopeCnt, pbBaseCandidateCnt)))
-        r := f_row(tDiag, r, "SepAbs",             f_f2(math.abs(emaFast - emaMid)))
-        r := f_row(tDiag, r, "ATR_use",            f_f2(atrSafe))
         r := f_row(tDiag, r, "Sep/ATR",            f_f2((atrSafe > 0.0) ? (math.abs(emaFast - emaMid) / atrSafe) : na))
         r := f_row(tDiag, r, "SepThr",             f_f2(pbEmaSepAtrMult))
         r := f_row(tDiag, r, "SepPass",            str.tostring(math.abs(emaFast - emaMid) >= (atrSafe * pbEmaSepAtrMult)))
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: EMA_COMP
-    // Specialized EMA compression debug
+    // PAGE: ADDON
     // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "EMA_COMP"
-        r := f_row(tDiag, r, "EMA comp sep%",      f_pctFrac_0to1(f_frac(pbBaseCandEmaCompSepCnt,   pbBaseCandidateCnt)))
-        r := f_row(tDiag, r, "EMA comp slp%",      f_pctFrac_0to1(f_frac(pbBaseCandEmaCompSlopeCnt, pbBaseCandidateCnt)))
-        r := f_row(tDiag, r, "EMA comp BOTH%",     f_pctFrac_0to1(f_frac(pbBaseCandEmaCompBothCnt,  pbBaseCandidateCnt)))
-        r := f_row(tDiag, r, "EMA comp sep Cnt",   f_int(pbBaseCandEmaCompSepCnt))
-        r := f_row(tDiag, r, "EMA comp slp Cnt",   f_int(pbBaseCandEmaCompSlopeCnt))
-        r := f_row(tDiag, r, "EMA comp BOTH Cnt",  f_int(pbBaseCandEmaCompBothCnt))
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: DONCH
-    // Specialized Donchian debug
-    // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "DONCH"
-        r := f_row(tDiag, r, "Donch EXH%",         f_pctFrac_0to1(f_frac(pbBaseCandDonchExhCnt,     pbBaseCandidateCnt)))
-        r := f_row(tDiag, r, "RSI+Donch%",         f_pctFrac_0to1(f_frac(pbBaseCandRsiDonchBothCnt, pbBaseCandidateCnt)))
-        r := f_row(tDiag, r, "Donch EXH Cnt",      f_int(pbBaseCandDonchExhCnt))
-        r := f_row(tDiag, r, "RSI+Donch Cnt",      f_int(pbBaseCandRsiDonchBothCnt))
-        r := f_row(tDiag, r, "PB entry B+S",       f_int(pbBaseEntryBraidRsiCnt))
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: ADDON_A
-    // Add-on funnel / trigger path
-    // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "ADDON_A"
-        r := f_row(tDiag, r, "Add Cand",           f_int(addCandCnt))
-        r := f_row(tDiag, r, "BigTrend OK",        f_int(addBigTrendOkCnt))
-        r := f_row(tDiag, r, "Impulse OK",         f_int(addImpulseOkCnt))
-        r := f_row(tDiag, r, "EMA Sep OK",         f_int(addSepOkCnt))
-        r := f_row(tDiag, r, "TouchRecent OK",     f_int(addTouchRecentOkCnt))
-        r := f_row(tDiag, r, "Momentum OK",        f_int(addMomentumOkCnt))
-        r := f_row(tDiag, r, "Trigger OK",         f_int(addTriggerOkCnt))
-        r := f_row(tDiag, r, "Reclaim OK",         f_int(addReclaimOkCnt))
-        r := f_row(tDiag, r, "Final Cond",         f_int(addFinalCondCnt))
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: ADDON_B
-    // Add-on execution / attribution / gating
-    // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "ADDON_B"
+    else if diagPage == "ADDON"
         r := f_row(tDiag, r, "ADD Fills",          f_int(addFillCnt))
-        r := f_row(tDiag, r, "PB_BASE Fills",      f_int(pbPullbackFillCnt))
-        r := f_row(tDiag, r, "CONT Fills",         f_int(contFillCnt))
-
         r := f_row(tDiag, r, "ADD Orig TOT",       f_int(addOriginTotalCnt))
         r := f_row(tDiag, r, "ADD after PB",       f_int(addAfterBaseFillCnt))
         r := f_row(tDiag, r, "ADD after CONT",     f_int(addAfterContFillCnt))
         r := f_row(tDiag, r, "After PB %",         f_pctFrac_0to1(addAfterBaseFrac))
         r := f_row(tDiag, r, "After CONT %",       f_pctFrac_0to1(addAfterContFrac))
-
+        r := f_row(tDiag, r, "Add Cand",           f_int(addCandCnt))
+        r := f_row(tDiag, r, "BigTrend OK",        f_int(addBigTrendOkCnt))
+        r := f_row(tDiag, r, "Impulse OK",         f_int(addImpulseOkCnt))
+        r := f_row(tDiag, r, "TouchRecent OK",     f_int(addTouchRecentOkCnt))
+        r := f_row(tDiag, r, "Reclaim OK",         f_int(addReclaimOkCnt))
         r := f_row(tDiag, r, "Profit OK",          f_int(addProfitOkCnt))
         r := f_row(tDiag, r, "MFE OK",             f_int(addMfeOkCnt))
         r := f_row(tDiag, r, "Room OK",            f_int(addRoomOkCnt))
         r := f_row(tDiag, r, "Cooldown OK",        f_int(addCooldownOkCnt))
         r := f_row(tDiag, r, "Chop OK",            f_int(addChopOkCnt))
+        r := f_row(tDiag, r, "Final Cond",         f_int(addFinalCondCnt))
+        r := f_row(tDiag, r, "Final/Cand %",       f_pctFrac_0to1(f_frac(addFinalCondCnt, addCandCnt)))
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: RM_LOWMFE
-    // PB_BASE LowMFE HARD_SL research
+    // PAGE: RM
     // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "RM_LOWMFE"
+    else if diagPage == "RM"
         rmCntTot = (rmCnt0 + rmCnt1 + rmCnt2 + rmCnt3 + rmCnt4 + rmCnt5)
         rmUsdTot = (rmUsd0 + rmUsd1 + rmUsd2 + rmUsd3 + rmUsd4 + rmUsd5)
-
-        r := f_row(tDiag, r, "Rm <0.00  Cnt|Loss$", str.format("{0} | {1}", f_int(rmCnt0), f_usd(rmUsd0)))
-        r := f_row(tDiag, r, "Rm 0.00-0.05",        str.format("{0} | {1}", f_int(rmCnt1), f_usd(rmUsd1)))
-        r := f_row(tDiag, r, "Rm 0.05-0.10",        str.format("{0} | {1}", f_int(rmCnt2), f_usd(rmUsd2)))
-        r := f_row(tDiag, r, "Rm 0.10-0.20",        str.format("{0} | {1}", f_int(rmCnt3), f_usd(rmUsd3)))
-        r := f_row(tDiag, r, "Rm 0.20-0.40",        str.format("{0} | {1}", f_int(rmCnt4), f_usd(rmUsd4)))
-        r := f_row(tDiag, r, "Rm >=0.40",           str.format("{0} | {1}", f_int(rmCnt5), f_usd(rmUsd5)))
-        r := f_row(tDiag, r, "Rm TOT  Cnt|Loss$",   str.format("{0} | {1}", f_int(rmCntTot), f_usd(rmUsdTot)))
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: RM_ALL
-    // PB_BASE all-trade net PnL by reclaim margin
-    // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "RM_ALL"
         rmAllCntTot = (rmAllCnt0 + rmAllCnt1 + rmAllCnt2 + rmAllCnt3 + rmAllCnt4 + rmAllCnt5)
         rmAllPnlTot = (rmAllPnl0 + rmAllPnl1 + rmAllPnl2 + rmAllPnl3 + rmAllPnl4 + rmAllPnl5)
 
-        r := f_row(tDiag, r, "LateMinAtr (x100)",      f_int(pbLateReclaimMinAtrX100))
-        r := f_row(tDiag, r, "LateGate Cand|Blk",      str.format("{0} | {1}", f_int(dbgLate_candPbBase), f_int(dbgLate_blocked)))
-        r := f_row(tDiag, r, "Rm PnL <0.00  Cnt|Net$", str.format("{0} | {1}", f_int(rmAllCnt0), f_usd(rmAllPnl0)))
-        r := f_row(tDiag, r, "Rm PnL 0.00-0.05",       str.format("{0} | {1}", f_int(rmAllCnt1), f_usd(rmAllPnl1)))
-        r := f_row(tDiag, r, "Rm PnL 0.05-0.10",       str.format("{0} | {1}", f_int(rmAllCnt2), f_usd(rmAllPnl2)))
-        r := f_row(tDiag, r, "Rm PnL 0.10-0.20",       str.format("{0} | {1}", f_int(rmAllCnt3), f_usd(rmAllPnl3)))
-        r := f_row(tDiag, r, "Rm PnL 0.20-0.40",       str.format("{0} | {1}", f_int(rmAllCnt4), f_usd(rmAllPnl4)))
-        r := f_row(tDiag, r, "Rm PnL >=0.40",          str.format("{0} | {1}", f_int(rmAllCnt5), f_usd(rmAllPnl5)))
-        r := f_row(tDiag, r, "Rm PnL TOT  Cnt|Net$",   str.format("{0} | {1}", f_int(rmAllCntTot), f_usd(rmAllPnlTot)))
+        r := f_row(tDiag, r, "LateMinAtr x100",    f_int(pbLateReclaimMinAtrX100))
+        r := f_row(tDiag, r, "LateGate Cand|Blk",  str.format("{0} | {1}", f_int(dbgLate_candPbBase), f_int(dbgLate_blocked)))
+        r := f_row(tDiag, r, "LMFE <0.00",         str.format("{0} | {1}", f_int(rmCnt0),    f_usd(rmUsd0)))
+        r := f_row(tDiag, r, "LMFE 0.00-0.05",     str.format("{0} | {1}", f_int(rmCnt1),    f_usd(rmUsd1)))
+        r := f_row(tDiag, r, "LMFE 0.05-0.10",     str.format("{0} | {1}", f_int(rmCnt2),    f_usd(rmUsd2)))
+        r := f_row(tDiag, r, "LMFE 0.10-0.20",     str.format("{0} | {1}", f_int(rmCnt3),    f_usd(rmUsd3)))
+        r := f_row(tDiag, r, "LMFE 0.20-0.40",     str.format("{0} | {1}", f_int(rmCnt4),    f_usd(rmUsd4)))
+        r := f_row(tDiag, r, "LMFE >=0.40",        str.format("{0} | {1}", f_int(rmCnt5),    f_usd(rmUsd5)))
+        r := f_row(tDiag, r, "LMFE TOT",           str.format("{0} | {1}", f_int(rmCntTot),  f_usd(rmUsdTot)))
+        r := f_row(tDiag, r, "PnL <0.00",          str.format("{0} | {1}", f_int(rmAllCnt0), f_usd(rmAllPnl0)))
+        r := f_row(tDiag, r, "PnL 0.00-0.05",      str.format("{0} | {1}", f_int(rmAllCnt1), f_usd(rmAllPnl1)))
+        r := f_row(tDiag, r, "PnL 0.05-0.10",      str.format("{0} | {1}", f_int(rmAllCnt2), f_usd(rmAllPnl2)))
+        r := f_row(tDiag, r, "PnL 0.10-0.20",      str.format("{0} | {1}", f_int(rmAllCnt3), f_usd(rmAllPnl3)))
+        r := f_row(tDiag, r, "PnL 0.20-0.40",      str.format("{0} | {1}", f_int(rmAllCnt4), f_usd(rmAllPnl4)))
+        r := f_row(tDiag, r, "PnL >=0.40",         str.format("{0} | {1}", f_int(rmAllCnt5), f_usd(rmAllPnl5)))
+        r := f_row(tDiag, r, "PnL TOT",            str.format("{0} | {1}", f_int(rmAllCntTot), f_usd(rmAllPnlTot)))
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: LOSS
-    // Exit-type loss totals
+    // PAGE: LOSS_PATHS
     // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "LOSS"
+    else if diagPage == "LOSS_PATHS"
         r := f_row(tDiag, r, "Loss ABS TOT$",      f_usd(lossAbsTotalUsd))
         r := f_row(tDiag, r, "Loss HARD_SL$",      f_usd(lossHardSlUsd))
         r := f_row(tDiag, r, "Loss PP_FLOOR$",     f_usd(lossPpFloorUsd))
@@ -3708,12 +3594,6 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "Loss IMP_DEC$",      f_usd(lossImpDecayUsd))
         r := f_row(tDiag, r, "SL LowMFE cnt|$",    f_pair(lossHardSlLowMfeCnt,  lossHardSlLowMfeUsd))
         r := f_row(tDiag, r, "SL HighMFE cnt|$",   f_pair(lossHardSlHighMfeCnt, lossHardSlHighMfeUsd))
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: PATHS
-    // LowMFE HARD_SL path split
-    // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "PATHS"
         r := f_row(tDiag, r, "LowMFE SL PB_BASE",  f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
         r := f_row(tDiag, r, "LowMFE SL CONT",     f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
         r := f_row(tDiag, r, "LowMFE SL ADD",      f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
