@@ -442,7 +442,7 @@ addOnCooldownBars = input.int(
      group  = grpAdd)
 
 addOnRequireProfitPct = input.float(
-     0.10,
+     0.50,
      "ADDON: Min Profit % Before Add",
      step   = 0.05,
      minval = 0.00,
@@ -1926,16 +1926,17 @@ if addCandNow
 
 pbAddOnCond := (
      enableAddOns
- and pbInPos
- and bigTrend
- and hasRealImpulse
- and addOnTouchedRecently
- and addOnReclaimOk
- and addOnProfitOk
- and addOnMfeOk
- and addRoomOk
- and (not inAddOnCooldown)
- and (not noTradeChop))
+     and pbInPos
+     and bigTrend
+     and hasRealImpulse
+     and emaSepOkAddon
+     and addOnTouchedRecently
+     and addOnReclaimOk
+     and addOnProfitOk
+     and addOnMfeOk
+     and addRoomOk
+     and (not inAddOnCooldown)
+     and (not noTradeChop))
 
 if pbAddOnCond
     addFinalCondCnt += 1
@@ -2036,9 +2037,10 @@ contQualityOk = (
      or vReversalCONT)
 
 orchContBaseEntryCond = (
-     orchContBaseSetupOk
-     and contSignalNow
-     and contQualityOk)
+          orchContBaseSetupOk
+          and contSignalNow
+          and contQualityOk
+          )
 
 // PB setup is computed in PB_ENTRY.
 // Flat-state ownership belongs here in ORCH.
