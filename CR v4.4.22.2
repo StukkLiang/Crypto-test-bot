@@ -442,7 +442,7 @@ addOnCooldownBars = input.int(
      group  = grpAdd)
 
 addOnRequireProfitPct = input.float(
-     0.50,
+     0.20,
      "ADDON: Min Profit % Before Add",
      step   = 0.05,
      minval = 0.00,
@@ -1778,6 +1778,7 @@ var int  addOnCount  = 0
 var int addCandCnt          = 0
 var int addBigTrendOkCnt    = 0
 var int addImpulseOkCnt     = 0
+var int addSepOkCnt         = 0
 var int addTouchRecentOkCnt = 0
 var int addReclaimOkCnt     = 0
 var int addProfitOkCnt      = 0
@@ -1876,9 +1877,7 @@ hasRealImpulse = (
  and (not midEmaDriftChurn))
 
 addOnReclaimOk = (
-     reclaimOkBase
- or (close > emaFast))
- //or (high > emaFast))
+     close > emaFast)
 
 addCandNow = (
      enableAddOns
@@ -1903,26 +1902,29 @@ if addCandNow
         if hasRealImpulse
             addImpulseOkCnt += 1
 
-            if addOnTouchedRecently
-                addTouchRecentOkCnt += 1
+            if emaSepOkAddon
+                addSepOkCnt += 1
 
-                if addOnReclaimOk
-                    addReclaimOkCnt += 1
+                if addOnTouchedRecently
+                    addTouchRecentOkCnt += 1
 
-                    if addOnProfitOk
-                        addProfitOkCnt += 1
+                    if addOnReclaimOk
+                        addReclaimOkCnt += 1
 
-                        if addOnMfeOk
-                            addMfeOkCnt += 1
+                        if addOnProfitOk
+                            addProfitOkCnt += 1
 
-                            if addRoomOk
-                                addRoomOkCnt += 1
+                            if addOnMfeOk
+                                addMfeOkCnt += 1
 
-                                if addCooldownOk
-                                    addCooldownOkCnt += 1
+                                if addRoomOk
+                                    addRoomOkCnt += 1
 
-                                    if addChopOk
-                                        addChopOkCnt += 1
+                                    if addCooldownOk
+                                        addCooldownOkCnt += 1
+
+                                        if addChopOk
+                                            addChopOkCnt += 1
 
 pbAddOnCond := (
      enableAddOns
@@ -3522,6 +3524,7 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "Add Cand",           f_int(addCandCnt))
         r := f_row(tDiag, r, "BigTrend OK",        f_int(addBigTrendOkCnt))
         r := f_row(tDiag, r, "Impulse OK",         f_int(addImpulseOkCnt))
+        r := f_row(tDiag, r, "EMA Sep OK",         f_int(addSepOkCnt))
         r := f_row(tDiag, r, "TouchRecent OK",     f_int(addTouchRecentOkCnt))
         r := f_row(tDiag, r, "Reclaim OK",         f_int(addReclaimOkCnt))
         r := f_row(tDiag, r, "Profit OK",          f_int(addProfitOkCnt))
