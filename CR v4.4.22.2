@@ -475,6 +475,31 @@ addOnTouchWindowBars = input.int(
      minval = 1,
      group  = grpAdd)
 
+addOnUseMomentum = input.bool(
+     true,
+     "ADDON: Enable Momentum Trigger",
+     group = grpAdd)
+
+addOnMomentumAtrMult = input.float(
+     0.80,
+     "ADDON: Momentum Distance Above Fast EMA (ATR)",
+     step   = 0.05,
+     minval = 0.05,
+     group  = grpAdd)
+
+addOnBreakoutLookback = input.int(
+     3,
+     "ADDON: Momentum Breakout Lookback",
+     minval = 1,
+     group  = grpAdd)
+
+addOnRearmAtrMult = input.float(
+     0.50,
+     "ADDON: Momentum Re-Arm Spacing (ATR)",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpAdd)
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXITS — CORE RISK / ARM
@@ -1767,26 +1792,33 @@ plotshape(dbgWin and contSignalNow, title="CONT signal", style=shape.triangleup,
 // Step 3 – Add-On Engine (press winners)
 // TEMP COMPAT VERSION:
 // - uses addOnCount instead of activeAddSlots until rolling-slot allocation is wired in ENTRY_ORCH
+// - temporary in-block tuners added for momentum ceiling + volatility-scaled pyramiding
 
 // ─────────────────────────────────────────
 // ADDON state
 // ─────────────────────────────────────────
-var bool pbAddOnCond = false
-var int  addOnCount  = 0
+var bool  pbAddOnCond          = false
+var int   addOnCount           = 0
+var float lastAddEntryRefPrice = na
 
 // ADDON funnel diagnostics
-var int addCandCnt          = 0
-var int addBigTrendOkCnt    = 0
-var int addImpulseOkCnt     = 0
-var int addSepOkCnt         = 0
-var int addTouchRecentOkCnt = 0
-var int addReclaimOkCnt     = 0
-var int addProfitOkCnt      = 0
-var int addMfeOkCnt         = 0
-var int addRoomOkCnt        = 0
-var int addCooldownOkCnt    = 0
-var int addChopOkCnt        = 0
-var int addFinalCondCnt     = 0
+var int addCandCnt              = 0
+var int addBigTrendOkCnt        = 0
+var int addImpulseOkCnt         = 0
+var int addSepOkCnt             = 0
+var int addTouchRecentOkCnt     = 0
+var int addMomentumOkCnt        = 0
+var int addTriggerOkCnt         = 0
+var int addReclaimOkCnt         = 0
+var int addProfitOkCnt          = 0
+var int addMfeOkCnt             = 0
+var int addRoomOkCnt            = 0
+var int addCooldownOkCnt        = 0
+var int addChopOkCnt            = 0
+var int addFinalCondCnt         = 0
+var int addMomentumCeilingOkCnt = 0
+var int addVolBoost1Cnt         = 0
+var int addVolBoost2Cnt         = 0
 
 // ADDON memory
 var int lastAddOnBar         = na
@@ -1799,6 +1831,16 @@ if not pbInPos
     lastAddOnBar := na
     lastAddTouchBar := na
     lastAddMicroResetBar := na
+    lastAddEntryRefPrice := na
+
+// ─────────────────────────────────────────
+// TEMP in-block tuners
+// (later we can externalize these to INPUTS)
+// ─────────────────────────────────────────
+addOnMomentumCeilingAtr = 3.00
+addOnVolScaleLen        = 50
+addOnVolBoost1Ratio     = 1.15
+addOnVolBoost2Ratio     = 1.35
 
 // Local helpers
 addOnProfitPct = (
@@ -1816,7 +1858,7 @@ addOnMfePct = (
      ? ((pbHighWater - pbAvg) / pbAvg) * 100.0
      : na)
 
-// Broaden ADDON touch detection
+// Pullback-touch model
 addOnTouchNow = (
      trendUp
  and bullStack
@@ -1824,8 +1866,7 @@ addOnTouchNow = (
       touchMid
       or touchFast
       or (low <= (emaFast + atrSafe * 0.30))
-      or (close <= (emaFast + atrSafe * 0.30))
-     ))
+      or (close <= (emaFast + atrSafe * 0.30)) ))
 
 if addOnTouchNow
     lastAddTouchBar := bar_index
@@ -1854,6 +1895,76 @@ addOnTouchedRecently = (
      addOnTouchRecent
  or addOnMicroResetRecent)
 
+fastSlopeAtr_local = f_slopeAtr(emaFast, slopeBars, atrSafe)
+
+hasRealImpulse = (
+     hasImpulse
+ and (not na(fastSlopeAtr_local))
+ and (fastSlopeAtr_local >= earlySlopeMinAtr)
+ and (not midEmaDriftChurn))
+
+// Momentum model
+addOnMomentumDistAtr = (
+     (atrSafe > 0)
+     ? ((close - emaFast) / atrSafe)
+     : na)
+
+addOnMomentumDistOk = (
+     pbInPos
+ and (not na(addOnMomentumDistAtr))
+ and (addOnMomentumDistAtr >= addOnMomentumAtrMult))
+
+addOnMomentumCeilingOk = (
+     pbInPos
+ and (not na(addOnMomentumDistAtr))
+ and (addOnMomentumDistAtr <= addOnMomentumCeilingAtr))
+
+addOnBreakoutRef = ta.highest(high, addOnBreakoutLookback)[1]
+
+addOnBreakoutOk = (
+     pbInPos
+ and (not na(addOnBreakoutRef))
+ and (close > addOnBreakoutRef))
+
+addOnMomentumSpacingOk = (
+     na(lastAddEntryRefPrice)
+     or (close >= (lastAddEntryRefPrice + atrSafe * addOnRearmAtrMult)))
+
+// Volatility-scaled pyramiding
+addOnAtrBase = ta.sma(atrSafe, addOnVolScaleLen)
+
+addOnVolRatio = (
+     (not na(addOnAtrBase))
+ and (addOnAtrBase > 0)
+     ? (atrSafe / addOnAtrBase)
+     : na)
+
+addOnVolBoost = (
+          (bigTrend and hasRealImpulse and (not na(addOnVolRatio)))
+          ? (addOnVolRatio >= addOnVolBoost2Ratio ? 2 :
+          addOnVolRatio >= addOnVolBoost1Ratio ? 1 : 0)
+          : 0
+          )
+
+addOnDynMax = (
+     maxAddOns + addOnVolBoost)
+
+addOnMomentumRoomOk = (
+     addOnCount < addOnDynMax)
+
+addOnMomentumOk = (
+     addOnUseMomentum
+ and addOnMomentumDistOk
+ and addOnMomentumCeilingOk
+ and addOnBreakoutOk
+ and addOnMomentumSpacingOk
+ and addOnMomentumRoomOk)
+
+// Combined trigger
+addOnTriggerOk = (
+     addOnTouchedRecently
+ or addOnMomentumOk)
+
 inAddOnCooldown = (
      (not na(lastAddOnBar))
  and ((bar_index - lastAddOnBar) <= addOnCooldownBars))
@@ -1868,14 +1979,6 @@ addOnMfeOk = (
  and (not na(addOnMfePct))
  and (addOnMfePct >= addOnRequireMfePct))
 
-fastSlopeAtr_local = f_slopeAtr(emaFast, slopeBars, atrSafe)
-
-hasRealImpulse = (
-     hasImpulse
- and (not na(fastSlopeAtr_local))
- and (fastSlopeAtr_local >= earlySlopeMinAtr)
- and (not midEmaDriftChurn))
-
 addOnReclaimOk = (
      close > emaFast)
 
@@ -1883,9 +1986,8 @@ addCandNow = (
      enableAddOns
  and pbInPos)
 
-// TEMP room gate: count-based compatibility until active slot logic is restored
 addRoomOk = (
-     addOnCount < 4)
+     addOnCount < addOnDynMax)
 
 addCooldownOk = (
      not inAddOnCooldown)
@@ -1908,6 +2010,21 @@ if addCandNow
                 if addOnTouchedRecently
                     addTouchRecentOkCnt += 1
 
+                if addOnMomentumCeilingOk
+                    addMomentumCeilingOkCnt += 1
+
+                if addOnVolBoost == 1
+                    addVolBoost1Cnt += 1
+
+                if addOnVolBoost >= 2
+                    addVolBoost2Cnt += 1
+
+                if addOnMomentumOk
+                    addMomentumOkCnt += 1
+
+                if addOnTriggerOk
+                    addTriggerOkCnt += 1
+
                     if addOnReclaimOk
                         addReclaimOkCnt += 1
 
@@ -1928,17 +2045,17 @@ if addCandNow
 
 pbAddOnCond := (
      enableAddOns
-     and pbInPos
-     and bigTrend
-     and hasRealImpulse
-     and emaSepOkAddon
-     and addOnTouchedRecently
-     and addOnReclaimOk
-     and addOnProfitOk
-     and addOnMfeOk
-     and addRoomOk
-     and (not inAddOnCooldown)
-     and (not noTradeChop))
+ and pbInPos
+ and bigTrend
+ and hasRealImpulse
+ and emaSepOkAddon
+ and addOnTriggerOk
+ and addOnReclaimOk
+ and addOnProfitOk
+ and addOnMfeOk
+ and addRoomOk
+ and (not inAddOnCooldown)
+ and (not noTradeChop))
 
 if pbAddOnCond
     addFinalCondCnt += 1
@@ -2352,6 +2469,7 @@ if orchAddOnEntryCond
 
     addOnCount := (addOnCount + 1)
     lastAddOnBar := bar_index
+    lastAddEntryRefPrice := close
 
 
 // Detect actual root fill (0 → >0)
@@ -3174,7 +3292,7 @@ pbAvgGiveback = (
 diagPage = input.string(
      title   = "DIAG Page",
      defval  = "CORE",
-     options = ["CORE", "LATE_GATE", "PB_CAND", "EMA_COMP", "DONCH", "ADDON", "RM_LOWMFE", "RM_ALL", "LOSS", "PATHS"],
+     options = ["CORE", "LATE_GATE", "PB_CAND", "EMA_COMP", "DONCH", "ADDON_A", "ADDON_B", "RM_LOWMFE", "RM_ALL", "LOSS", "PATHS"],
      group   = "DIAG")
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3507,10 +3625,25 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "PB entry B+S",       f_int(pbBaseEntryBraidRsiCnt))
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: ADDON
-    // Add-on flow / funnel diagnostics
+    // PAGE: ADDON_A
+    // Add-on funnel / trigger path
     // ─────────────────────────────────────────────────────────────────────────
-    else if diagPage == "ADDON"
+    else if diagPage == "ADDON_A"
+        r := f_row(tDiag, r, "Add Cand",           f_int(addCandCnt))
+        r := f_row(tDiag, r, "BigTrend OK",        f_int(addBigTrendOkCnt))
+        r := f_row(tDiag, r, "Impulse OK",         f_int(addImpulseOkCnt))
+        r := f_row(tDiag, r, "EMA Sep OK",         f_int(addSepOkCnt))
+        r := f_row(tDiag, r, "TouchRecent OK",     f_int(addTouchRecentOkCnt))
+        r := f_row(tDiag, r, "Momentum OK",        f_int(addMomentumOkCnt))
+        r := f_row(tDiag, r, "Trigger OK",         f_int(addTriggerOkCnt))
+        r := f_row(tDiag, r, "Reclaim OK",         f_int(addReclaimOkCnt))
+        r := f_row(tDiag, r, "Final Cond",         f_int(addFinalCondCnt))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PAGE: ADDON_B
+    // Add-on execution / attribution / gating
+    // ─────────────────────────────────────────────────────────────────────────
+    else if diagPage == "ADDON_B"
         r := f_row(tDiag, r, "ADD Fills",          f_int(addFillCnt))
         r := f_row(tDiag, r, "PB_BASE Fills",      f_int(pbPullbackFillCnt))
         r := f_row(tDiag, r, "CONT Fills",         f_int(contFillCnt))
@@ -3521,18 +3654,11 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "After PB %",         f_pctFrac_0to1(addAfterBaseFrac))
         r := f_row(tDiag, r, "After CONT %",       f_pctFrac_0to1(addAfterContFrac))
 
-        r := f_row(tDiag, r, "Add Cand",           f_int(addCandCnt))
-        r := f_row(tDiag, r, "BigTrend OK",        f_int(addBigTrendOkCnt))
-        r := f_row(tDiag, r, "Impulse OK",         f_int(addImpulseOkCnt))
-        r := f_row(tDiag, r, "EMA Sep OK",         f_int(addSepOkCnt))
-        r := f_row(tDiag, r, "TouchRecent OK",     f_int(addTouchRecentOkCnt))
-        r := f_row(tDiag, r, "Reclaim OK",         f_int(addReclaimOkCnt))
         r := f_row(tDiag, r, "Profit OK",          f_int(addProfitOkCnt))
         r := f_row(tDiag, r, "MFE OK",             f_int(addMfeOkCnt))
         r := f_row(tDiag, r, "Room OK",            f_int(addRoomOkCnt))
         r := f_row(tDiag, r, "Cooldown OK",        f_int(addCooldownOkCnt))
         r := f_row(tDiag, r, "Chop OK",            f_int(addChopOkCnt))
-        r := f_row(tDiag, r, "Final Cond",         f_int(addFinalCondCnt))
 
     // ─────────────────────────────────────────────────────────────────────────
     // PAGE: RM_LOWMFE
