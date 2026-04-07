@@ -1,0 +1,3655 @@
+//@version=5
+
+// ============================================================================
+// Catch Raise (CR) Strategy
+// Version: v4.4.22.3 – CONT SL Diagnostics
+// Symbol: BTCUSD
+// Timeframe: 4H
+//
+// PURPOSE
+// Instrument CONT stop-loss diagnostics to identify dominant causes of CONT
+// losses before modifying entry logic.
+//
+// CONTEXT
+// Current architecture uses CONT as the primary root engine with ADDON
+// pyramiding enabled and PB pullback engine temporarily disabled.
+//
+// Observed issue:
+// CONT stop-loss trades dominate the loss distribution and represent the
+// largest source of strategy drawdown.
+//
+// OBJECTIVE
+// Add diagnostic attribution for CONT SL trades to determine whether failures
+// are primarily caused by:
+//
+// • EMA compression / weak trend structure
+// • Late breakout entries
+// • Weak impulse / insufficient momentum
+// • Trend exhaustion conditions
+//
+// RULE
+// This version adds diagnostics only and must not change trading behavior or
+// Strategy Report results.
+//
+// ROADMAP
+// Phase 1 – CONT SL diagnostics (current version)
+// Phase 2 – CONT entry filtering improvements
+// Phase 3 – Laddered ADDON exit / re-entry
+// Phase 4 – Progressive ADDON size reduction
+// Phase 5 – Re-enable PB pullback engine
+// ============================================================================
+
+// =======[BLOCK: STRATEGY_BEGIN]=======
+strategy(
+     title                   = "v4.4.22.3 – CONT SL Diagnostics",
+     shorttitle              = "v4.4.22.3 – CONT SL Diagnostics",
+     overlay                 = true,
+     pyramiding              = 5,      // base + 4 add-ons = 5 total entries allowed
+     initial_capital         = 10000,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.0,
+     slippage                = 0,
+     default_qty_type        = strategy.fixed,
+     default_qty_value       = 0.1,
+     calc_on_every_tick      = false,
+     process_orders_on_close = true,
+     max_labels_count        = 500)
+// =======[BLOCK: STRATEGY_END]=========
+
+
+// =======[BLOCK: INPUTS_BEGIN]=======
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS — housekeeping regroup for cleaner tuning / maintenance
+// NOTE:
+// - Variable names are unchanged
+// - Defaults are unchanged
+// - Logic is unchanged
+// - Only group organization / display labels are cleaned up
+// ─────────────────────────────────────────────────────────────────────────────
+
+// =======[INPUT_GROUPS]=======
+grpCore        = "CORE"
+grpTrend       = "TREND / REGIME"
+grpPullbackA   = "PB_PULLBACK A — Core"
+grpPullbackB   = "PB_PULLBACK B — Reclaim / Confirm"
+grpPullbackC   = "PB_PULLBACK C — RSI / Braid / Compression"
+grpPullbackD   = "PB_PULLBACK D — Impulse / EMA Separation"
+grpCont        = "CONT ENGINE"
+grpAddonA      = "ADDON A — Signals / Trigger"
+grpAddonB      = "ADDON B — Filters / Momentum"
+grpExitA       = "EXITS A — Core Risk / Arm"
+grpExitB       = "EXITS B — EMA Gate / EMA Flip"
+grpExitC       = "EXITS C — Graduation / Profit Protect / Impulse Decay"
+grpDiag        = "DIAGNOSTICS"
+grpVisual      = "VISUALS / DEBUG"
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORE
+// ─────────────────────────────────────────────────────────────────────────────
+lenFast = input.int(
+     20,
+     "Fast EMA Length",
+     minval = 1,
+     group  = grpCore)
+
+lenMid = input.int(
+     50,
+     "Mid EMA Length",
+     minval = 1,
+     group  = grpCore)
+
+lenSlow = input.int(
+     200,
+     "Slow EMA Length (Trend)",
+     minval = 1,
+     group  = grpCore)
+
+rsiLen = input.int(
+     14,
+     "RSI Length",
+     minval = 1,
+     group  = grpCore)
+
+atrLen = input.int(
+     14,
+     "ATR Length",
+     minval = 1,
+     group  = grpCore)
+
+slopeBars = input.int(
+     8,
+     "Slope Lookback Bars",
+     minval = 1,
+     group  = grpCore)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TREND / REGIME
+// ─────────────────────────────────────────────────────────────────────────────
+flatSlopeMaxAtr = input.float(
+     0.04,
+     "Flat Slope Max (ATR-Norm)",
+     step  = 0.01,
+     group = grpTrend)
+
+compressMaxAtr = input.float(
+     0.45,
+     "Compressed Structure Max (ATR-Norm)",
+     step  = 0.05,
+     group = grpTrend)
+
+earlySlopeMinAtr = input.float(
+     0.02,
+     "Early Trend: Slow EMA Slope Min (ATR-Norm)",
+     step   = 0.01,
+     minval = 0.00,
+     group  = grpTrend)
+
+earlyDistMinAtr = input.float(
+     0.10,
+     "Early Trend: Close Above Slow EMA Min (ATR)",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpTrend)
+
+impulseSepMinAtr = input.float(
+     0.18,
+     "Impulse Context: Min EMA Separation (ATR)",
+     step   = 0.01,
+     minval = 0.00,
+     group  = grpTrend)
+
+midDriftSlopeMinAtr = input.float(
+     0.02,
+     "Mid-Drift: Mid EMA Slope Min (ATR-Norm)",
+     step   = 0.01,
+     minval = 0.00,
+     group  = grpTrend)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB_PULLBACK A — Core
+// ─────────────────────────────────────────────────────────────────────────────
+enablePB = input.bool(
+     true,
+     "Enable PB Entry Engine",
+     group = grpPullbackA)
+
+pbUseMidTouch = input.bool(
+     true,
+     "PB Touch Uses Mid EMA",
+     group = grpPullbackA)
+
+pbUseFastTouch = input.bool(
+     true,
+     "PB Touch Uses Fast EMA",
+     group = grpPullbackA)
+
+pbCooldownBars = input.int(
+     6,
+     "PB Cooldown Bars After Exit",
+     minval = 0,
+     group  = grpPullbackA)
+
+pbFsCompressAtrMult = input.float(
+     0.25,
+     "PB BASE: Fast–Slow Compression Threshold (ATR)",
+     step  = 0.05,
+     group = grpPullbackA)
+
+pbFsEscapeAtrMult = input.float(
+     0.35,
+     "PB BASE: Fast–Slow Escape Threshold (ATR)",
+     step  = 0.05,
+     group = grpPullbackA)
+
+pbMidSlowSepAtrMult = input.float(
+     0.6,
+     "PB BASE: Mid–Slow EMA Separation Min (ATR)",
+     step  = 0.05,
+     group = grpPullbackA)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB_PULLBACK B — Reclaim / Confirm
+// ─────────────────────────────────────────────────────────────────────────────
+pbReclaimMode = input.string(
+     "Close>Fast",
+     "PB Reclaim Trigger",
+     options = ["Close>Fast", "CrossOverFast"],
+     group   = grpPullbackB)
+
+pbReclaimWindowBars = input.int(
+     6,
+     "PB Reclaim Window (Bars)",
+     minval = 1,
+     group  = grpPullbackB)
+
+pbReclaimBufAtrMult = input.float(
+     title  = "PB Reclaim Buffer (ATR Mult)",
+     defval = 0.00,
+     minval = 0.00,
+     maxval = 0.20,
+     step   = 0.01,
+     group  = grpPullbackB)
+
+pbWeakConfirmExtraAtrMult = input.float(
+     title  = "PB Weak Confirm Extra (ATR Mult)",
+     defval = 1.5,
+     minval = 0.00,
+     maxval = 3.00,
+     step   = 0.05,
+     group  = grpPullbackB)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB_PULLBACK C — RSI / Braid / Compression
+// ─────────────────────────────────────────────────────────────────────────────
+pbBraidUseGate = input.bool(
+     true,
+     "PB BASE: Enable Braid × RSI Stall Gate",
+     group = grpPullbackC)
+
+pbBraidSepAtrMax = input.float(
+     0.25,
+     "Braid: Max EMA Separation (ATR)",
+     step  = 0.05,
+     group = grpPullbackC)
+
+pbBraidSlopeAtrMax = input.float(
+     0.12,
+     "Braid: Max EMA Slope (ATR)",
+     step  = 0.01,
+     group = grpPullbackC)
+
+pbRsiStallLo = input.float(
+     45.0,
+     "RSI Stall Lower Bound",
+     step  = 0.5,
+     group = grpPullbackC)
+
+pbRsiStallHi = input.float(
+     60.0,
+     "RSI Stall Upper Bound",
+     step  = 0.5,
+     group = grpPullbackC)
+
+pbRsiSlopeLen = input.int(
+     5,
+     "RSI Slope Lookback",
+     minval = 1,
+     group  = grpPullbackC)
+
+pbRsiSlopeMax = input.float(
+     0.0,
+     "RSI Stall Raw Slope Max",
+     step  = 0.1,
+     group = grpPullbackC)
+
+pbRsiNormLen = input.int(
+     title  = "RSI Norm Length (Stdev)",
+     defval = 14,
+     minval = 5,
+     maxval = 50,
+     step   = 1,
+     group  = grpPullbackC)
+
+pbRsiStallSlopeNormMax = input.float(
+     title  = "RSI Stall Slope Max (RSI-Norm)",
+     defval = 0.40,
+     minval = 0.05,
+     maxval = 2.00,
+     step   = 0.05,
+     group  = grpPullbackC)
+
+pbRsiWeakSlopeNormMax = input.float(
+     title  = "RSI Weak Slope Max (RSI-Norm)",
+     defval = 0.40,
+     minval = 0.05,
+     maxval = 2.00,
+     step   = 0.05,
+     group  = grpPullbackC)
+
+pbBaseUseRsiNormGate = input.bool(
+     title  = "PB BASE: Enable RSI Norm Gate",
+     defval = true,
+     group  = grpPullbackC)
+
+pbBaseRsiNormGateMode = input.string(
+     title   = "PB BASE: RSI Norm Gate Mode",
+     defval  = "OR (block if either weak)",
+     options = ["OR (block if either weak)", "AND (block only if both weak)"],
+     group   = grpPullbackC)
+
+pbRsiWeakDistMax = input.float(
+     6.0,
+     "Diag: RSI Weak Distance From 50 Max",
+     step  = 0.5,
+     group = grpPullbackC)
+
+pbCompSepAtrMaxDiag = input.float(
+     0.25,
+     "Diag: EMA Compression MinSep/ATR Max",
+     step  = 0.05,
+     group = grpPullbackC)
+
+pbCompSlopeAtrMaxDiag = input.float(
+     0.20,
+     "Diag: EMA Compression MaxSlope/ATR Max",
+     step  = 0.05,
+     group = grpPullbackC)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB_PULLBACK D — Impulse / EMA Separation
+// ─────────────────────────────────────────────────────────────────────────────
+pbEmaSepAtrMult = input.float(
+     0.30,
+     "PB BASE: Fast–Mid EMA Separation Min (ATR)",
+     step  = 0.05,
+     group = grpPullbackD)
+
+pbImpulseSlopeAtrMult = input.float(
+     0.20,
+     "PB BASE: Impulse Slope Min (ATR)",
+     step  = 0.01,
+     group = grpPullbackD)
+
+pbEmaSepAtrMultAddon = input.float(
+     title  = "PB ADD-ON: Fast–Mid EMA Separation Min (ATR)",
+     defval = 0.24,
+     minval = 0.05,
+     maxval = 1.00,
+     step   = 0.01,
+     group  = grpPullbackD)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONT ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+enableCont = input.bool(
+     false,
+     "Enable CONT Entry Engine",
+     group = grpCont)
+
+contLen = input.int(
+     20,
+     "CONT Breakout Length",
+     minval = 5,
+     group  = grpCont)
+
+// DEV override
+forceEnableCont = true
+
+// FINAL gate used everywhere
+contEnabled = (
+     forceEnableCont
+     ? true
+     : enableCont)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDON A — Signals / Trigger
+// ─────────────────────────────────────────────────────────────────────────────
+enableAddOns = input.bool(
+     true,
+     "Enable ADDON Engine",
+     group = grpAddonA)
+
+maxAddOns = input.int(
+     6,
+     "Max ADDON Count",
+     minval = 0,
+     maxval = 10,
+     group  = grpAddonA)
+
+addOnCooldownBars = input.int(
+     2,
+     "ADDON Cooldown Bars",
+     minval = 0,
+     group  = grpAddonA)
+
+addOnRequireProfitPct = input.float(
+     0.20,
+     "ADDON: Min Profit % Before Add",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpAddonA)
+
+addOnRequireMfePct = input.float(
+     1.0,
+     "ADDON: Min MFE % Before Add",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpAddonA)
+
+addOnTouchWindowBars = input.int(
+     12,
+     "ADDON Touch Window (Bars)",
+     minval = 1,
+     group  = grpAddonA)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDON B — Filters / Momentum
+// ─────────────────────────────────────────────────────────────────────────────
+bigTrendSlopeMinAtr = input.float(
+     0.06,
+     "ADDON: Big Trend Slow EMA Slope Min (ATR-Norm)",
+     step   = 0.01,
+     minval = 0.00,
+     group  = grpAddonB)
+
+bigTrendDistMinAtr = input.float(
+     0.60,
+     "ADDON: Big Trend Close Above Slow EMA Min (ATR)",
+     step   = 0.10,
+     minval = 0.00,
+     group  = grpAddonB)
+
+addOnUseMomentum = input.bool(
+     true,
+     "ADDON: Enable Momentum Trigger",
+     group = grpAddonB)
+
+addOnMomentumAtrMult = input.float(
+     0.80,
+     "ADDON: Momentum Distance Above Fast EMA (ATR)",
+     step   = 0.05,
+     minval = 0.05,
+     group  = grpAddonB)
+
+addOnBreakoutLookback = input.int(
+     3,
+     "ADDON: Momentum Breakout Lookback",
+     minval = 1,
+     group  = grpAddonB)
+
+addOnRearmAtrMult = input.float(
+     0.50,
+     "ADDON: Momentum Re-Arm Spacing (ATR)",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpAddonB)
+
+addOnMaxConcurrent = input.int(
+     4,
+     "ADDON: Max Concurrent Adds",
+     minval = 1,
+     maxval = 10,
+     group  = grpAddonB)
+
+addOnCeilingFastAtrMult = input.float(
+     2.20,
+     "ADDON: Ceiling Max Dist Above Fast EMA (ATR)",
+     step   = 0.05,
+     minval = 0.20,
+     group  = grpAddonB)
+
+addOnCeilingMidAtrMult = input.float(
+     3.20,
+     "ADDON: Ceiling Max Dist Above Mid EMA (ATR)",
+     step   = 0.05,
+     minval = 0.20,
+     group  = grpAddonB)
+
+addOnCeilingUseMidConfirm = input.bool(
+     true,
+     "ADDON: Ceiling Requires Mid EMA Confirm",
+     group = grpAddonB)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXITS A — Core Risk / Arm
+// ─────────────────────────────────────────────────────────────────────────────
+pbTpPct = input.float(
+     1.50,
+     "PB Full-Arm Trigger (%)",
+     step   = 0.05,
+     minval = 0.05,
+     group  = grpExitA)
+
+pbSlPct = input.float(
+     2.00,
+     "PB Hard Stop (%)",
+     step   = 0.05,
+     minval = 0.05,
+     group  = grpExitA)
+
+pbLockPct = input.float(
+     0.10,
+     "PB Profit Lock (%) After Full Arm",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpExitA)
+
+pbTrailPct = input.float(
+     1.00,
+     "PB Percent Trail (%) After Full Arm",
+     step   = 0.10,
+     minval = 0.10,
+     group  = grpExitA)
+
+pbTrailAtrMult = input.float(
+     1.50,
+     "PB ATR Trail Mult After Full Arm",
+     step   = 0.10,
+     minval = 0.10,
+     group  = grpExitA)
+
+pbSoftArmPct = input.float(
+     0.80,
+     "Soft Arm Trigger (%)",
+     step   = 0.05,
+     minval = 0.05,
+     group  = grpExitA)
+
+pbSoftTrailPct = input.float(
+     1.40,
+     "Soft Arm Percent Trail (%)",
+     step   = 0.10,
+     minval = 0.10,
+     group  = grpExitA)
+
+pbSoftTrailAtrMult = input.float(
+     2.00,
+     "Soft Arm ATR Trail Mult",
+     step   = 0.10,
+     minval = 0.10,
+     group  = grpExitA)
+
+pbArmMode = input.string(
+     "MFE_AND_CLOSE",
+     "Full Arm Mode",
+     options = ["MFE_ONLY", "MFE_AND_CLOSE", "MFE_AND_CLOSE_ABOVE_FAST"],
+     group   = grpExitA)
+
+pbArmBufferPct = input.float(
+     0.10,
+     "Full Arm Buffer (%) Above Trigger",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpExitA)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXITS B — EMA Gate / EMA Flip
+// ─────────────────────────────────────────────────────────────────────────────
+enableExitGate = input.bool(
+     true,
+     "Enable EMA-Aware Exit Gate",
+     group = grpExitB)
+
+catAtrMult = input.float(
+     2.50,
+     "Catastrophic Stop ATR Mult",
+     step   = 0.10,
+     minval = 0.10,
+     group  = grpExitB)
+
+gateRequireCloseMid = input.bool(
+     true,
+     "EMA Gate Requires Close > Mid EMA",
+     group = grpExitB)
+
+enableEmaFlipExit = input.bool(
+     true,
+     "Enable EMA Flip Exit",
+     group = grpExitB)
+
+emaFlipSource = input.string(
+     "Close<Fast",
+     "EMA Flip Condition",
+     options = ["Close<Fast", "Close<Mid"],
+     group   = grpExitB)
+
+emaFlipProfitMaxPct = input.float(
+     0.50,
+     "EMA Flip Allowed Only If Profit % ≤",
+     step   = 0.05,
+     minval = -5.00,
+     group  = grpExitB)
+
+emaFlipDisableIfMfePct = input.float(
+     1.50,
+     "Disable EMA Flip If MFE % ≥",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpExitB)
+
+emaFlipRequireTrendWeak = input.bool(
+     true,
+     "EMA Flip Requires Fast ≤ Mid",
+     group = grpExitB)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXITS C — Graduation / Profit Protect / Impulse Decay
+// ─────────────────────────────────────────────────────────────────────────────
+enableGraduation = input.bool(
+     true,
+     "Enable Graduation Ladder",
+     group = grpExitC)
+
+gradBeMfePct = input.float(
+     1.20,
+     "Activate BE Floor When MFE % ≥",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpExitC)
+
+gradBeBufferPct = input.float(
+     0.05,
+     "BE Buffer (%)",
+     step   = 0.01,
+     minval = 0.00,
+     group  = grpExitC)
+
+gradTrailStartMfePct = input.float(
+     2.50,
+     "Allow Trailing Only When MFE % ≥",
+     step   = 0.05,
+     minval = 0.10,
+     group  = grpExitC)
+
+enableProfitProtect = input.bool(
+     true,
+     "Enable Profit Protect",
+     group = grpExitC)
+
+ppStartMfePct = input.float(
+     1.80,
+     "PP Start MFE %",
+     step  = 0.1,
+     group = grpExitC)
+
+ppFullMfePct = input.float(
+     2.50,
+     "PP Full Lock MFE %",
+     step  = 0.1,
+     group = grpExitC)
+
+ppBeBufferPct = input.float(
+     0.05,
+     "PP BE Buffer %",
+     step  = 0.01,
+     group = grpExitC)
+
+ppLockMinPct = input.float(
+     0.20,
+     "PP Lock Min %",
+     step  = 0.05,
+     group = grpExitC)
+
+ppLockMaxPct = input.float(
+     1.20,
+     "PP Lock Max %",
+     step  = 0.05,
+     group = grpExitC)
+
+enablePpTrail = input.bool(
+     true,
+     "Enable PP Trail",
+     group = grpExitC)
+
+ppTrailStartMfePct = input.float(
+     3.00,
+     "PP Trail Start MFE %",
+     step  = 0.1,
+     group = grpExitC)
+
+ppTrailAtrMult = input.float(
+     2.00,
+     "PP Trail ATR Mult",
+     step  = 0.1,
+     group = grpExitC)
+
+ppTrailPct = input.float(
+     1.20,
+     "PP Trail Percent %",
+     step  = 0.1,
+     group = grpExitC)
+
+enableImpulseDecayExit = input.bool(
+     true,
+     "Enable Impulse-Decay Exit",
+     group = grpExitC)
+
+impNoNewHighBars = input.int(
+     6,
+     "No New High Bars",
+     minval = 1,
+     group  = grpExitC)
+
+impMaxLossPct = input.float(
+     0.25,
+     "Allow Impulse-Decay Exit If Loss % ≤",
+     step  = 0.05,
+     group = grpExitC)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────────────────────
+dmgMfeMinPct = input.float(
+     1.00,
+     "Damaged Winner If MFE % ≥",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpDiag)
+
+dmgExitCeilPct = input.float(
+     0.20,
+     "Damaged Winner If Exit % ≤",
+     step  = 0.05,
+     group = grpDiag)
+
+showDamageTable = input.bool(
+     true,
+     "Show Metrics Table",
+     group = grpDiag)
+
+showDamagedMarks = input.bool(
+     true,
+     "Mark Damaged Winners On Exit Bar",
+     group = grpDiag)
+
+dmgLabelYOffsetAtr = input.float(
+     0.20,
+     "Damaged Label Y Offset (ATR)",
+     step   = 0.05,
+     minval = 0.00,
+     group  = grpDiag)
+
+distMicroUsd = input.float(
+     0.50,
+     "Micro P&L Threshold (Abs USD)",
+     step   = 0.10,
+     minval = 0.00,
+     group  = grpDiag)
+
+distBigWinUsd = input.float(
+     5.00,
+     "Big Win Threshold (USD)",
+     step   = 0.50,
+     minval = 0.00,
+     group  = grpDiag)
+
+distBigLossUsd = input.float(
+     5.00,
+     "Big Loss Threshold (USD)",
+     step   = 0.50,
+     minval = 0.00,
+     group  = grpDiag)
+
+diagTrackBlkToCont = input.bool(
+     title  = "Track Blocked BASE → CONT",
+     defval = true,
+     group  = grpDiag)
+
+diagBlkToContWinBars = input.int(
+     title  = "Blocked BASE → CONT Window (Bars)",
+     defval = 3,
+     minval = 1,
+     maxval = 50,
+     group  = grpDiag)
+
+diagTrackBlkToBaseDelay = input.bool(
+     title  = "Track Blocked BASE → BASE Later",
+     defval = true,
+     group  = grpDiag)
+
+diagBlkToBaseWinBars = input.int(
+     title  = "Blocked BASE → BASE Window (Bars)",
+     defval = 3,
+     minval = 1,
+     maxval = 50,
+     group  = grpDiag)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VISUALS / DEBUG
+// ─────────────────────────────────────────────────────────────────────────────
+showMarks = input.bool(
+     true,
+     "Show Entry / Exit Markers",
+     group = grpVisual)
+
+showNoTradeBg = input.bool(
+     true,
+     "Show No-Trade Background",
+     group = grpVisual)
+
+showGateBg = input.bool(
+     false,
+     "Show Gate-Active Background",
+     group = grpVisual)
+
+showEntryDebug = input.bool(
+     false,
+     "Debug: Show Raw PB Entry Dots",
+     group = grpVisual)
+
+
+// =======[BLOCK: ENTRY_IDS_BEGIN]=======
+// Entry IDs (split Base / Cont / Add for clean Strategy Report & attribution)
+pbIdBase = "PB_BASE"
+pbIdCont = "PB_CONT"
+pbIdAdd  = "PB_ADD"
+// =======[BLOCK: ENTRY_IDS_END]=========
+
+// =======[BLOCK: INPUTS_END]=========
+
+
+// =======[BLOCK: FUNCS_BEGIN]=======
+// Helper functions (keep script modular + reduce drift)
+
+f_slopeAtr(_series, _bars, _atrSafe) =>
+    (
+         _atrSafe > 0.0
+         ? (math.abs(_series - _series[_bars]) / _atrSafe)
+         : na)
+
+// v4.4.13 name (keep for compatibility)
+f_compressAtr(_fast, _mid, _slow, _atrSafe) =>
+    (
+         _atrSafe > 0.0
+         ? ((math.abs(_fast - _mid) + math.abs(_mid - _slow)) / _atrSafe)
+         : na)
+
+// v4.4.14 alias (in case you started using this name during edits)
+f_impulseSepAtr(_fast, _mid, _slow, _atrSafe) =>
+    f_compressAtr(_fast, _mid, _slow, _atrSafe)
+
+f_noTradeChop(_slowSlopeAtr, _compressAtr, _flatSlopeMaxAtr, _compressMaxAtr) =>
+    (
+         (not na(_slowSlopeAtr))
+         and (_slowSlopeAtr <= _flatSlopeMaxAtr)
+         and (not na(_compressAtr))
+         and (_compressAtr <= _compressMaxAtr))
+
+f_distAtr(_price, _ema, _atrSafe) =>
+    (
+         _atrSafe > 0.0
+         ? ((_price - _ema) / _atrSafe)
+         : na)
+
+f_bigTrend(_slowSlopeAtr, _slowDistAtr, _slopeMinAtr, _distMinAtr) =>
+    (
+         (not na(_slowSlopeAtr))
+         and (_slowSlopeAtr >= _slopeMinAtr)
+         and (not na(_slowDistAtr))
+         and (_slowDistAtr >= _distMinAtr))
+
+// =======[BLOCK: FUNCS_END]=========
+
+
+// =======[BLOCK: INDICATORS_BEGIN]=======
+// ─────────────────────────────────────────────────────────────────────────────
+// Indicators (canonical vars + compatibility aliases)
+// ─────────────────────────────────────────────────────────────────────────────
+emaFast = ta.ema(close, lenFast)
+emaMid  = ta.ema(close, lenMid)
+emaSlow = ta.ema(close, lenSlow)
+
+atrVal  = ta.atr(atrLen)
+atrSafe = math.max(atrVal, syminfo.mintick)
+
+rsiVal  = ta.rsi(close, rsiLen)
+
+// --- Compatibility aliases (keep older block code working)
+fastEma = emaFast
+midEma  = emaMid
+slowEma = emaSlow
+atr     = atrVal
+rsi     = rsiVal
+
+// --- Donchian (visual only)
+donchLen = 20
+donchUpperPlot = ta.highest(high, donchLen)
+donchLowerPlot = ta.lowest(low,  donchLen)
+donchMidPlot   = (donchUpperPlot + donchLowerPlot) / 2.0
+
+// --- Visuals (same pane): EMAs on price scale, RSI on left scale
+plot(emaFast, title="EMA Fast", color=color.aqua, linewidth=2, display=display.all)
+plot(emaMid,  title="EMA Mid",  color=color.yellow, linewidth=2, display=display.all)
+plot(emaSlow, title="EMA Slow", color=color.red, linewidth=2, display=display.all)
+
+//plot(donchUpperPlot, title="Donchian Upper", color=color.orange, linewidth=2, display=display.all)
+//plot(donchLowerPlot, title="Donchian Lower", color=color.gray, linewidth=2, display=display.all)
+plot(donchMidPlot,   title="Donchian Mid",   color=color.orange, linewidth=1, display=display.all)
+
+
+rsiBandAtr = atrVal * 2.0
+rsiBase    = emaSlow - (atrVal * 10.0)
+rsiOverlay = rsiBase + (rsiVal / 100.0) * rsiBandAtr
+
+plot(rsiOverlay, title="RSI (Overlay)", color=color.purple, linewidth=2)
+
+// =======[BLOCK: INDICATORS_END]=========
+
+
+// =======[BLOCK: REGIME_BEGIN]=======
+// Flat + Compressed regime (blocks new trades / add-ons)
+
+// slowSlopeAtr: slow EMA slope normalized by ATR
+slowSlopeAtr = f_slopeAtr(emaSlow, slopeBars, atrSafe)
+
+// compressAtr: EMA braid/compression normalized by ATR
+compressAtr  = f_compressAtr(emaFast, emaMid, emaSlow, atrSafe)
+
+// isCompressed: True when EMA compression is below threshold
+isCompressed = (
+     (not na(compressAtr))
+     and (compressAtr <= compressMaxAtr))
+
+// noTradeChop: flat + compressed blocker (primary chop regime)
+noTradeChop = f_noTradeChop(slowSlopeAtr, compressAtr, flatSlopeMaxAtr, compressMaxAtr)
+
+// =======[BLOCK: REGIME_END]=========
+
+
+// =======[BLOCK: TREND_FLAGS_BEGIN]=======
+// Trend flags used by PB entry + add-ons
+
+// trendUp: price above slow EMA
+trendUp = (
+     close > emaSlow)
+
+// bullStack: EMA fast > mid > slow
+bullStack = (
+     (emaFast > emaMid)
+     and (emaMid > emaSlow))
+
+// emaFlatAndCompressed: legacy alias used by older PB logic
+emaFlatAndCompressed = (
+     noTradeChop)
+
+// slowDistAtr: distance above slow EMA normalized by ATR
+slowDistAtr = f_distAtr(close, emaSlow, atrSafe)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Impulse / separation (kills mid-EMA-led drift churn)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// sepFastMidAtr: |Fast - Mid| / ATR
+sepFastMidAtr = (
+     atrSafe > 0.0
+     ? (math.abs(emaFast - emaMid) / atrSafe)
+     : na)
+
+// sepMidSlowAtr: |Mid - Slow| / ATR
+sepMidSlowAtr = (
+     atrSafe > 0.0
+     ? (math.abs(emaMid - emaSlow) / atrSafe)
+     : na)
+
+// hasImpulse: True when either separation meets impulse threshold
+hasImpulse = (
+     (not na(sepFastMidAtr))
+     and (not na(sepMidSlowAtr))
+     and ((sepFastMidAtr >= impulseSepMinAtr) or (sepMidSlowAtr >= impulseSepMinAtr)))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Early trend gate (BASE PB only)
+// ─────────────────────────────────────────────────────────────────────────────
+earlyTrendOk = (
+     (not na(slowSlopeAtr))
+     and (slowSlopeAtr >= earlySlopeMinAtr)
+     and (not na(slowDistAtr))
+     and (slowDistAtr >= earlyDistMinAtr)
+     and (not noTradeChop))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mid-EMA-led drift churn: mid slopes, but no impulse, and compressed
+// ─────────────────────────────────────────────────────────────────────────────
+midSlopeAtr = f_slopeAtr(emaMid, slopeBars, atrSafe)
+
+midEmaDriftChurn = (
+     (not na(midSlopeAtr))
+     and (midSlopeAtr >= midDriftSlopeMinAtr)
+     and (not hasImpulse)
+     and isCompressed)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Big trend definition for add-ons (press winners)
+// ─────────────────────────────────────────────────────────────────────────────
+bigTrend = f_bigTrend(slowSlopeAtr, slowDistAtr, bigTrendSlopeMinAtr, bigTrendDistMinAtr)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EMA separation gate (BASE vs ADD-ON thresholds)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// emaSepAbs: |Fast - Mid|
+emaSepAbs = math.abs(emaFast - emaMid)
+
+// emaSepAtrRatio: |Fast - Mid| / ATR (diag helper)
+emaSepAtrRatio = (
+     (not na(atrVal)) and (atrVal > 0.0)
+     ? (emaSepAbs / atrVal)
+     : na)
+
+// emaSepOkBase: BASE separation threshold V4.2.22.1 REVISION
+pbImpulseOk = (
+     (not na(atrVal)) and (atrVal > 0.0)
+     and
+     (
+          // EMA separation (existing)
+          (emaSepAbs >= (atrVal * pbEmaSepAtrMult))
+
+          // NEW: fast EMA impulse (critical)
+          and ((emaFast - emaFast[1]) >= (atrVal * pbImpulseSlopeAtrMult))
+     )
+     )
+
+// emaSepOkAddon: ADD-ON separation threshold
+emaSepOkAddon = (
+     (not na(atrVal))
+     and (emaSepAbs >= (atrVal * pbEmaSepAtrMultAddon)))
+
+// emaSepWeakAddon: diag flag (addon would be weak by sep)
+emaSepWeakAddon = (
+     (not na(atrVal))
+     and (atrVal > 0.0)
+     and (emaSepAbs < (atrVal * pbEmaSepAtrMultAddon)))
+
+
+// =======[BLOCK: TREND_FLAGS_END]=========
+
+
+// =======[BLOCK: POSITION_STATE_BEGIN]=======
+// Tracks position lifecycle and key state variables used by EXITS, METRICS and ADDON engines
+
+// ─────────────────────────────────────────
+// Core position flags
+// ─────────────────────────────────────────
+var bool  pbInPos        = false
+var float pbAvg          = na
+var float pbHighWater    = na
+var int   pbLastHighBar  = na
+
+// ─────────────────────────────────────────
+// Fill path attribution
+// (used by metrics + loss matrix)
+// ─────────────────────────────────────────
+var string pbLastFillPath = "UNK"     // PB_BASE | CONT | PB_ADDON | UNK
+var string pbFillIntent   = "UNK"     // temporary intent set by ORCH before entry
+
+// NOTE:
+// activeBaseType must NOT be re-declared here if it already exists elsewhere.
+// Keep only one global declaration in the whole script.
+
+// ─────────────────────────────────────────
+// Position change detection
+// ─────────────────────────────────────────
+posSizeNow  = strategy.position_size
+posSizePrev = nz(strategy.position_size[1])
+
+posIncreasedNow = (
+     posSizeNow > posSizePrev)
+
+posDecreasedNow = (
+     posSizeNow < posSizePrev)
+
+posOpenedNow = (
+     posSizeNow > 0
+ and posSizePrev == 0)
+
+posClosedNow = (
+     posSizeNow == 0
+ and posSizePrev > 0)
+
+// ─────────────────────────────────────────
+// State updates
+// ─────────────────────────────────────────
+pbInPos := (
+     posSizeNow > 0)
+
+pbAvg := (
+     pbInPos
+     ? strategy.position_avg_price
+     : na)
+
+// ─────────────────────────────────────────
+// High-water mark tracking
+// ─────────────────────────────────────────
+if posOpenedNow
+    pbHighWater   := high
+    pbLastHighBar := bar_index
+
+if pbInPos and (na(pbHighWater) or high > pbHighWater)
+    pbHighWater   := high
+    pbLastHighBar := bar_index
+
+if posClosedNow
+    pbHighWater   := na
+    pbLastHighBar := na
+
+// ─────────────────────────────────────────
+// Fill path capture
+// ORCH sets pbFillIntent before order.
+// When fill happens we latch it.
+// ─────────────────────────────────────────
+if posIncreasedNow
+    pbLastFillPath := (
+         pbFillIntent != "UNK"
+         ? pbFillIntent
+         : "UNK")
+    pbFillIntent := "UNK"
+
+// ─────────────────────────────────────────
+// Base entry classification
+// latch when position opens
+// ─────────────────────────────────────────
+var int activeBaseType = 0
+
+if posOpenedNow
+    activeBaseType := (
+         pbLastFillPath == "CONT"
+         ? 2
+         : 1)
+
+if posClosedNow
+    activeBaseType := 0
+
+// ─────────────────────────────────────────
+// Trade close event marker
+// used by metrics block
+// ─────────────────────────────────────────
+pbJustClosed = posClosedNow
+
+// =======[BLOCK: POSITION_STATE_END]=======
+
+
+// =======[BLOCK: PB_DEFINITION_BEGIN]=======
+// Pullback definition + reclaim levels (compute only; no order placement)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Touch definition (PB “pullback touched EMA” memory)
+// ─────────────────────────────────────────────────────────────────────────────
+touchMid = (
+     pbUseMidTouch
+ and (low <= emaMid))
+
+touchFast = (
+     pbUseFastTouch
+ and (low <= emaFast))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB Reclaim Buffer + Weak Confirm levels
+// - reclaimLevel = emaFast + ATR * pbReclaimBufAtrMult
+// - weakConfirmLevel = reclaimLevel + ATR * pbWeakConfirmExtraAtrMult
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Reclaim buffer (ATR-based)
+reclaimBuf = (
+     (not na(atrVal))
+     and (atrVal > 0.0)
+     ? (atrVal * pbReclaimBufAtrMult)
+     : 0.0)
+
+reclaimLevel = (
+     (not na(emaFast))
+     ? (emaFast + reclaimBuf)
+     : na)
+
+reclaimClose = (
+     (not na(reclaimLevel))
+     and (close > reclaimLevel))
+
+reclaimCross = (
+     (not na(reclaimLevel))
+     and ta.crossover(close, reclaimLevel))
+
+reclaimOkBase = (
+     (pbReclaimMode == "Close>Fast" and reclaimClose)
+  or (pbReclaimMode == "CrossOverFast" and reclaimCross))
+
+// Weak-confirm buffer is strictly ABOVE reclaimLevel
+weakConfirmBuf = (
+     (not na(atrVal))
+     and (atrVal > 0.0)
+     ? (atrVal * pbWeakConfirmExtraAtrMult)
+     : 0.0)
+
+weakConfirmLevel = (
+     (not na(reclaimLevel))
+     ? (reclaimLevel + weakConfirmBuf)
+     : na)
+
+weakConfirmClose = (
+     (not na(weakConfirmLevel))
+     and (close > weakConfirmLevel))
+
+weakConfirmCross = (
+     (not na(weakConfirmLevel))
+     and ta.crossover(close, weakConfirmLevel))
+
+pbWeakConfirmOk = (
+     (pbReclaimMode == "Close>Fast" and weakConfirmClose)
+  or (pbReclaimMode == "CrossOverFast" and weakConfirmCross))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Touch memory window (base entries)
+// ─────────────────────────────────────────────────────────────────────────────
+var int lastPbTouchBar = na
+
+pbTouchNow = (
+     trendUp
+ and bullStack
+ and (touchMid or touchFast))
+
+if pbTouchNow
+    lastPbTouchBar := bar_index
+
+pbTouchedRecently = (
+     (not na(lastPbTouchBar))
+ and ((bar_index - lastPbTouchBar) <= pbReclaimWindowBars))
+
+// =======[BLOCK: PB_DEFINITION_END]=========
+
+
+
+// =======[BLOCK: PB_COOLDOWN_BEGIN]=======
+var int lastPbExitBar = na
+
+inPbCooldown = (
+     (not na(lastPbExitBar))
+ and ((bar_index - lastPbExitBar) <= pbCooldownBars))
+// =======[BLOCK: PB_COOLDOWN_END]=========
+
+
+// =======[BLOCK: PB_ENTRY_BEGIN]=======
+// Pullback Entry (PB_BASE ROOT) – flat pullback / reclaim root engine
+//
+// NOTE (architecture refactor):
+// - CONT is a flat first-entry breakout engine.
+// - PB_ENTRY is now ALSO a flat root-entry engine.
+// - PB_ENTRY computes the PB_BASE root trigger only.
+// - Actual order placement still belongs to ENTRY_ORCH.
+// - Internal legacy variable names are kept for compatibility
+//   (e.g. pbBaseCandidateNow / pbEntryCond / PB_BASE attribution strings).
+
+
+// ---- Donchian stub for v4.4.17 diagnostics ----
+pbDonchExhausted = false
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v4.4.22: Late-reclaim threshold (ATR) — INTEGER input for safe sweeping
+// UI is x100, internal is float ATR.
+// ─────────────────────────────────────────────────────────────────────────────
+pbLateReclaimMinAtrX100 = input.int(
+     title  = "PB Late Reclaim Min (ATR x100)",
+     defval = 40,
+     minval = 0,
+     maxval = 999,
+     step   = 5,
+     group  = "PB_ENTRY")
+
+pbLateReclaimMinAtr = (float(pbLateReclaimMinAtrX100) / 100.0)
+
+
+// Earlier “EMA confirmation” path (kicks in before earlyTrendOk sometimes turns true)
+pbEarlyEmaConfirmOk = (
+     trendUp
+     and bullStack
+     and hasImpulse)
+
+
+// v4.4.16 Option A: Structure gate (Mid–Slow must also have meaningful separation)
+emaSepMidSlowOk = (
+     (not na(emaMid))
+     and (not na(emaSlow))
+     and (not na(atrSafe))
+     and (math.abs(emaMid - emaSlow) >= (atrSafe * pbMidSlowSepAtrMult)))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v4.4.17: RSI stall detector + v4.4.19 RSI weakness booleans
+// ─────────────────────────────────────────────────────────────────────────────
+pbRsiSlope = (
+     not na(rsiVal)
+     ? (rsiVal - rsiVal[pbRsiSlopeLen])
+     : na)
+
+pbRsiStdev = ta.stdev(rsiVal, pbRsiNormLen)
+
+pbRsiSlopeNorm = (
+     (not na(pbRsiStdev))
+     and (pbRsiStdev > 0.0)
+     and (not na(pbRsiSlope))
+     ? (math.abs(pbRsiSlope) / pbRsiStdev)
+     : na)
+
+pbRsiStall = (
+     (not na(rsiVal))
+     and (rsiVal >= pbRsiStallLo)
+     and (rsiVal <= pbRsiStallHi)
+     and (not na(pbRsiSlopeNorm))
+     and (pbRsiSlopeNorm <= pbRsiStallSlopeNormMax))
+
+// [DIAG] RSI weakness continuous measures (used by RSI Norm Gate)
+pbRsiDist50 = (
+     not na(rsiVal)
+     ? math.abs(rsiVal - 50.0)
+     : na)
+
+pbRsiWeakByDist = (
+     (not na(pbRsiDist50))
+     and (pbRsiDist50 <= pbRsiWeakDistMax))
+
+pbRsiWeakBySlope = (
+     (not na(pbRsiSlopeNorm))
+     and (pbRsiSlopeNorm <= pbRsiWeakSlopeNormMax))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v4.4.19: PB_BASE RSI Norm gate (legacy names kept)
+// ─────────────────────────────────────────────────────────────────────────────
+pbBaseRsiNormWeak = (
+     (pbBaseRsiNormGateMode == "OR (block if either weak)")
+     ? (pbRsiWeakByDist or pbRsiWeakBySlope)
+     : (pbRsiWeakByDist and pbRsiWeakBySlope))
+
+pbBaseRsiNormGateOk = (
+     (not pbBaseUseRsiNormGate)
+     or (not pbBaseRsiNormWeak))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v4.4.17: EMA braid detector (structure dead-zone)
+// ─────────────────────────────────────────────────────────────────────────────
+pbFmSepAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? (math.abs(emaFast - emaMid) / atrSafe)
+     : na)
+
+pbMsSepAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? (math.abs(emaMid - emaSlow) / atrSafe)
+     : na)
+
+pbFastSlopeAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? (math.abs(emaFast - emaFast[1]) / atrSafe)
+     : na)
+
+pbMidSlopeAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? (math.abs(emaMid - emaMid[1]) / atrSafe)
+     : na)
+
+pbSlowSlopeAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? (math.abs(emaSlow - emaSlow[1]) / atrSafe)
+     : na)
+
+pbEmaBraid = (
+     (not na(pbFmSepAtr)) and (not na(pbMsSepAtr))
+     and (pbFmSepAtr <= pbBraidSepAtrMax)
+     and (pbMsSepAtr <= pbBraidSepAtrMax)
+     and (not na(pbFastSlopeAtr)) and (not na(pbMidSlopeAtr)) and (not na(pbSlowSlopeAtr))
+     and (pbFastSlopeAtr <= pbBraidSlopeAtrMax)
+     and (pbMidSlopeAtr <= pbBraidSlopeAtrMax)
+     and (pbSlowSlopeAtr <= pbBraidSlopeAtrMax))
+
+// [DIAG] split braid into component checks
+pbBraidSepOk = (
+     (not na(pbFmSepAtr)) and (not na(pbMsSepAtr))
+     and (pbFmSepAtr <= pbBraidSepAtrMax)
+     and (pbMsSepAtr <= pbBraidSepAtrMax))
+
+pbBraidSlopeOk = (
+     (not na(pbFastSlopeAtr)) and (not na(pbMidSlopeAtr)) and (not na(pbSlowSlopeAtr))
+     and (pbFastSlopeAtr <= pbBraidSlopeAtrMax)
+     and (pbMidSlopeAtr <= pbBraidSlopeAtrMax)
+     and (pbSlowSlopeAtr <= pbBraidSlopeAtrMax))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v4.4.17 DIAG: EMA compression scores (ATR-normalized)
+// ─────────────────────────────────────────────────────────────────────────────
+pbSepMinAtr = (
+     (not na(pbFmSepAtr)) and (not na(pbMsSepAtr))
+     ? math.min(pbFmSepAtr, pbMsSepAtr)
+     : na)
+
+pbSlopeMaxAtr = (
+     (not na(pbFastSlopeAtr)) and (not na(pbMidSlopeAtr)) and (not na(pbSlowSlopeAtr))
+     ? math.max(pbFastSlopeAtr, math.max(pbMidSlopeAtr, pbSlowSlopeAtr))
+     : na)
+
+pbEmaCompSepDiagOk = (
+     (not na(pbSepMinAtr))
+     and (pbSepMinAtr <= pbCompSepAtrMaxDiag))
+
+pbEmaCompSlopeDiagOk = (
+     (not na(pbSlopeMaxAtr))
+     and (pbSlopeMaxAtr <= pbCompSlopeAtrMaxDiag))
+
+pbEmaCompressedDiag = (
+     pbEmaCompSepDiagOk
+     and pbEmaCompSlopeDiagOk)
+
+
+// PB-only block condition: (braid) AND (stall)
+pbBaseBraidRsiBlocked = (
+     pbBraidUseGate
+     and pbEmaBraid
+     and pbRsiStall)
+
+pbBaseBraidRsiGateOk = (
+     pbBraidUseGate
+     ? (not pbBaseBraidRsiBlocked)
+     : true)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Final PB_BASE trend gate (legacy names kept)
+// ─────────────────────────────────────────────────────────────────────────────
+pbBaseCompressGateOk = (
+     not pbBraidUseGate
+     or not pbEmaCompressedDiag
+     )
+
+pbBaseTrendGateOk = (
+     (earlyTrendOk or pbEarlyEmaConfirmOk)
+     and (not noTradeChop)
+     and (not midEmaDriftChurn)
+     and pbImpulseOk
+     and emaSepMidSlowOk
+     and pbBaseCompressGateOk
+     and pbBaseRsiNormGateOk
+     )
+
+pbBaseEntryGateOk = (
+     pbBaseTrendGateOk
+     and pbBaseBraidRsiGateOk)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Setup booleans (housekeeping)
+// - pbSetupOkCore: setup quality only (NO braid/stall gate)
+// - pbSetupOk    : adds braid/stall gate
+// NOTE:
+// - PB_BASE is now a FLAT ROOT engine.
+// - PB_BASE is NOT part of the add-on ladder.
+// ─────────────────────────────────────────────────────────────────────────────
+pbSetupOkCore = (
+     enablePB
+     and pbTouchedRecently
+     and (not inPbCooldown)
+     and pbBaseTrendGateOk)
+
+pbSetupOk = (
+     pbSetupOkCore
+     and pbBaseBraidRsiGateOk)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Weak-setup definition (computed once; used by late-reclaim + weak-confirm logic)
+// ─────────────────────────────────────────────────────────────────────────────
+pbWeakSetup = (
+     (pbEmaBraid
+      or pbRsiStall
+      or pbBaseRsiNormWeak
+      or pbEmaCompressedDiag)
+     and (not pbBaseBraidRsiBlocked))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v4.4.22: Trigger-time late-reclaim margin (ATR-normalized)
+// NOTE: uses weakConfirmLevel when weak, else reclaimLevel
+// NOTE: info/diagnostic only; actual late gate is enforced in ENTRY_ORCH
+// ─────────────────────────────────────────────────────────────────────────────
+pbLateRefLevelTrig = (
+     pbWeakSetup
+     ? weakConfirmLevel
+     : reclaimLevel)
+
+pbReclaimMarginAtrTrigNow = (
+     (not na(atrSafe))
+     and (atrSafe > 0.0)
+     and (not na(pbLateRefLevelTrig))
+     ? ((close - pbLateRefLevelTrig) / atrSafe)
+     : na)
+
+// Info-only: late observed (any setup)
+pbLateReclaimNow = (
+     (not na(pbReclaimMarginAtrTrigNow))
+     and (pbReclaimMarginAtrTrigNow >= pbLateReclaimMinAtr))
+
+// Info-only: weak+late at signal-time.
+// ENTRY_ORCH enforces the real order-site gate.
+pbLateReclaimBlocked = (
+     pbWeakSetup
+     and (not na(pbReclaimMarginAtrTrigNow))
+     and (pbReclaimMarginAtrTrigNow >= pbLateReclaimMinAtr))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diagnostics: candidate vs blocked (candidate-time)
+// Legacy names kept for table compatibility.
+// ─────────────────────────────────────────────────────────────────────────────
+var int  pbBaseBlockedRsiNormCnt = 0
+bool pbLastBaseBlockedByRsiNorm = false
+
+var int pbBaseCandidateCnt = 0
+var int pbBaseBlockedCnt   = 0
+
+var int pbBaseCandEmaBraidCnt    = 0
+var int pbBaseCandRsiStallCnt    = 0
+var int pbBaseCandBraidRsiCnt    = 0
+var int pbBaseCandNeitherCnt     = 0
+
+var int pbBaseEntryEmaBraidCnt   = 0
+var int pbBaseEntryRsiStallCnt   = 0
+var int pbBaseEntryBraidRsiCnt   = 0
+var int pbBaseEntryNeitherCnt    = 0
+
+var int pbBaseCandBraidSepOkCnt   = 0
+var int pbBaseCandBraidSlopeOkCnt = 0
+
+var int pbBaseCandRsiWeakDistCnt     = 0
+var int pbBaseCandRsiStrongDistCnt   = 0
+var int pbBaseCandRsiWeakSlopeCnt    = 0
+var int pbBaseCandRsiStrongSlopeCnt  = 0
+
+var int pbBaseCandDonchExhCnt      = 0
+var int pbBaseCandRsiOnlyCnt       = 0
+var int pbBaseCandDonchOnlyCnt     = 0
+var int pbBaseCandRsiDonchBothCnt  = 0
+
+var int pbBaseCandEmaCompSepCnt    = 0
+var int pbBaseCandEmaCompSlopeCnt  = 0
+var int pbBaseCandEmaCompBothCnt   = 0
+
+var int  pbBaseLateRmNowCnt     = 0
+var int  pbBaseLateRmBlockedCnt = 0
+bool pbLastBaseBlockedByLateRm = false
+
+pbLastBaseBlockedByRsiNorm := false
+pbLastBaseBlockedByLateRm  := false
+
+// Candidate event (PB_BASE ROOT candidates only)
+pbBaseCandidateNow = (
+     (strategy.position_size == 0)
+     and pbSetupOkCore
+     and reclaimOkBase)
+
+if pbBaseCandidateNow
+    pbBaseCandidateCnt += 1
+
+    if pbBaseUseRsiNormGate and (not pbBaseRsiNormGateOk)
+        pbBaseBlockedRsiNormCnt += 1
+        pbLastBaseBlockedByRsiNorm := true
+
+    if pbLateReclaimNow
+        pbBaseLateRmNowCnt += 1
+
+    if pbLateReclaimBlocked
+        pbBaseLateRmBlockedCnt += 1
+        pbLastBaseBlockedByLateRm := true
+
+    if pbEmaCompSepDiagOk
+        pbBaseCandEmaCompSepCnt += 1
+    if pbEmaCompSlopeDiagOk
+        pbBaseCandEmaCompSlopeCnt += 1
+    if pbEmaCompressedDiag
+        pbBaseCandEmaCompBothCnt += 1
+
+    if pbBraidSepOk
+        pbBaseCandBraidSepOkCnt += 1
+    if pbBraidSlopeOk
+        pbBaseCandBraidSlopeOkCnt += 1
+
+    if pbEmaBraid and pbRsiStall
+        pbBaseCandBraidRsiCnt += 1
+    else if pbEmaBraid
+        pbBaseCandEmaBraidCnt += 1
+    else if pbRsiStall
+        pbBaseCandRsiStallCnt += 1
+    else
+        pbBaseCandNeitherCnt += 1
+
+    if pbRsiWeakByDist
+        pbBaseCandRsiWeakDistCnt += 1
+    else
+        pbBaseCandRsiStrongDistCnt += 1
+
+    if pbRsiWeakBySlope
+        pbBaseCandRsiWeakSlopeCnt += 1
+    else
+        pbBaseCandRsiStrongSlopeCnt += 1
+
+    if pbDonchExhausted
+        pbBaseCandDonchExhCnt += 1
+
+    if pbRsiStall and pbDonchExhausted
+        pbBaseCandRsiDonchBothCnt += 1
+    else if pbRsiStall and (not pbDonchExhausted)
+        pbBaseCandRsiOnlyCnt += 1
+    else if (not pbRsiStall) and pbDonchExhausted
+        pbBaseCandDonchOnlyCnt += 1
+
+pbBaseBlockedNow = (
+     pbBaseCandidateNow
+     and pbBraidUseGate
+     and pbBaseBraidRsiBlocked)
+
+if pbBaseBlockedNow
+    pbBaseBlockedCnt += 1
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Weak-confirm pending latch (only for weak setups missing weak-confirm)
+// NOTE:
+// - PB_BASE is now flat-only.
+// - Late gating is owned by ENTRY_ORCH; do not pre-block here.
+// ─────────────────────────────────────────────────────────────────────────────
+pbEntrySignalBaseNow = (
+     pbSetupOk
+     and reclaimOkBase)
+
+var bool pbBasePendingWeak = false
+var int  pbBasePendingWeakAge = 0
+pbBasePendingWeakMaxBars = 2
+
+if (strategy.position_size == 0)
+    if (pbEntrySignalBaseNow and pbWeakSetup and (not pbWeakConfirmOk))
+        pbBasePendingWeak := true
+        pbBasePendingWeakAge := 0
+
+    if pbBasePendingWeak
+        pbBasePendingWeakAge += 1
+        if (pbBasePendingWeakAge > pbBasePendingWeakMaxBars)
+            pbBasePendingWeak := false
+            pbBasePendingWeakAge := 0
+else
+    pbBasePendingWeak := false
+    pbBasePendingWeakAge := 0
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB_BASE root entry condition (setup-only final trigger)
+// - Strong setups: require base reclaim (reclaimOkBase)
+// - Weak setups : require weak-confirm reclaim (pbWeakConfirmOk) now or within latch window
+// - Flat-state / late gate / final order-site gating belong to ENTRY_ORCH
+// ─────────────────────────────────────────────────────────────────────────────
+pbEntryCond = (
+     (pbSetupOk and reclaimOkBase and (not pbWeakSetup))
+     or (
+          pbSetupOk
+          and pbWeakSetup
+          and pbWeakConfirmOk)
+     or (
+          pbBasePendingWeak
+          and pbWeakConfirmOk))
+
+// [DIAG] weak candidate vs blocked counts
+var int pbWeakCandCnt = 0
+var int pbWeakBlockedCnt = 0
+
+if (pbEntrySignalBaseNow and pbWeakSetup)
+    pbWeakCandCnt += 1
+    if (not pbWeakConfirmOk)
+        pbWeakBlockedCnt += 1
+
+if (pbEntryCond and pbBasePendingWeak)
+    pbBasePendingWeak := false
+    pbBasePendingWeakAge := 0
+
+// NOTE:
+// - Do NOT set pbFillIntent here
+// - Do NOT increment counters here
+// - Actual order placement belongs to ENTRY_ORCH
+
+// =======[BLOCK: PB_ENTRY_END]=========
+
+
+// =======[BLOCK: CONT_SIGNAL_BEGIN]=======
+
+// Donchian breakout for continuation trigger (separate from PB Donchian mid plot)
+contHi = ta.highest(high, contLen)[1]
+
+// V-reversal breakout detection
+impulseBreak = (
+     (high - low) > atrSafe * 1.3
+     and (close - low) / (high - low) > 0.65
+               )
+
+fastSlope = f_slopeAtr(emaFast, slopeBars, atrSafe)
+
+fastTurningUp = (
+     not na(fastSlope)
+     and fastSlope > earlySlopeMinAtr)
+
+vReversalCONT = (
+     impulseBreak
+     and close > emaFast
+     and fastTurningUp
+ //    and not na(contHi)
+ //    and close > contHi
+     and rsiVal > 55)
+
+// CONT signal ONLY (breakout). Do NOT apply regime/flat gating here.
+// Orchestrator will apply orchBaseSetupOk (pbBaseTrendGateOk + flat).
+
+contSignalNow = (
+     (contEnabled
+     and not na(contHi)
+     and high >= contHi)
+     or vReversalCONT)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEBUG (optional): print FIRST blocker as a fixed digit (no series string)
+// 1=EN off, 2=contHi na, 3=No breakout
+// ─────────────────────────────────────────────────────────────────────────────
+dbgWin = (
+     (time >= timestamp("UTC", 2025, 10, 1, 0, 0))
+     and (time <= timestamp("UTC", 2025, 10, 5, 23, 59)))
+
+dbgBlocker = (
+     (not contEnabled) ? 1 :
+     (na(contHi)) ? 2 :
+     (high < contHi) ? 3 :
+     0)
+
+plotshape(dbgWin and (dbgBlocker == 1), title="DBG_CONT1", style=shape.circle, location=location.abovebar, size=size.tiny, text="1")
+plotshape(dbgWin and (dbgBlocker == 2), title="DBG_CONT2", style=shape.circle, location=location.abovebar, size=size.tiny, text="2")
+plotshape(dbgWin and (dbgBlocker == 3), title="DBG_CONT3", style=shape.circle, location=location.abovebar, size=size.tiny, text="3")
+
+// Mark raw CONT signal (not the actual entry; entry is decided in ENTRY_ORCH)
+plotshape(dbgWin and contSignalNow, title="CONT signal", style=shape.triangleup, location=location.belowbar, size=size.tiny, text="C")
+
+// =======[BLOCK: CONT_SIGNAL_END]=========
+
+
+// =======[BLOCK: ADDON_SIGNAL_BEGIN]=======
+// Step 3 – Add-On Engine (press winners)
+// Phase A:
+// - add ceiling / extension awareness
+// - reduce concurrent adds via input instead of hardcoded 4
+// - keep compatibility architecture for now
+// - rolling ladder / slot reuse comes later
+
+// ─────────────────────────────────────────
+// ADDON state
+// ─────────────────────────────────────────
+var bool pbAddOnCond = false
+var int  addOnCount  = 0
+
+// ADDON funnel diagnostics
+var int addCandCnt          = 0
+var int addBigTrendOkCnt    = 0
+var int addImpulseOkCnt     = 0
+var int addSepOkCnt         = 0
+var int addTouchRecentOkCnt = 0
+var int addReclaimOkCnt     = 0
+var int addProfitOkCnt      = 0
+var int addMfeOkCnt         = 0
+var int addCeilingOkCnt     = 0
+var int addRoomOkCnt        = 0
+var int addCooldownOkCnt    = 0
+var int addChopOkCnt        = 0
+var int addFinalCondCnt     = 0
+
+// ADDON memory
+var int lastAddOnBar         = na
+var int lastAddTouchBar      = na
+var int lastAddMicroResetBar = na
+var float lastAddEntryRefPrice = na
+
+// Reset memory when flat
+if not pbInPos
+    addOnCount := 0
+    lastAddOnBar := na
+    lastAddTouchBar := na
+    lastAddMicroResetBar := na
+    lastAddEntryRefPrice := na
+
+// Local helpers
+addOnProfitPct = (
+     pbInPos
+ and (not na(pbAvg))
+ and (pbAvg > 0)
+     ? ((close - pbAvg) / pbAvg) * 100.0
+     : na)
+
+addOnMfePct = (
+     pbInPos
+ and (not na(pbAvg))
+ and (pbAvg > 0)
+ and (not na(pbHighWater))
+     ? ((pbHighWater - pbAvg) / pbAvg) * 100.0
+     : na)
+
+// Distance / extension diagnostics
+addOnDistFastAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? ((close - emaFast) / atrSafe)
+     : na)
+
+addOnDistMidAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? ((close - emaMid) / atrSafe)
+     : na)
+
+// Broaden ADDON touch detection
+addOnTouchNow = (
+     trendUp
+ and bullStack
+ and (
+      touchMid
+      or touchFast
+      or (low <= (emaFast + atrSafe * 0.30))
+      or (close <= (emaFast + atrSafe * 0.30))
+     ))
+
+if addOnTouchNow
+    lastAddTouchBar := bar_index
+
+addOnTouchRecent = (
+     (not na(lastAddTouchBar))
+ and ((bar_index - lastAddTouchBar) <= addOnTouchWindowBars))
+
+// Micro-reset detection
+addOnMicroResetNow = (
+     trendUp
+ and bullStack
+ and (close > emaFast)
+ and (low > emaFast)
+ and ((high - low) <= (atrSafe * 0.30))
+ and (math.abs(close - open) <= (atrSafe * 0.18)))
+
+if addOnMicroResetNow
+    lastAddMicroResetBar := bar_index
+
+addOnMicroResetRecent = (
+     (not na(lastAddMicroResetBar))
+ and ((bar_index - lastAddMicroResetBar) <= addOnTouchWindowBars))
+
+addOnTouchedRecently = (
+     addOnTouchRecent
+ or addOnMicroResetRecent)
+
+inAddOnCooldown = (
+     (not na(lastAddOnBar))
+ and ((bar_index - lastAddOnBar) <= addOnCooldownBars))
+
+addOnProfitOk = (
+     pbInPos
+ and (not na(addOnProfitPct))
+ and (addOnProfitPct >= addOnRequireProfitPct))
+
+addOnMfeOk = (
+     pbInPos
+ and (not na(addOnMfePct))
+ and (addOnMfePct >= addOnRequireMfePct))
+
+fastSlopeAtr_local = f_slopeAtr(emaFast, slopeBars, atrSafe)
+
+hasRealImpulse = (
+     hasImpulse
+ and (not na(fastSlopeAtr_local))
+ and (fastSlopeAtr_local >= earlySlopeMinAtr)
+ and (not midEmaDriftChurn))
+
+addOnReclaimOk = (
+     close > emaFast)
+
+// Ceiling / extension gate
+addOnCeilingFastOk = (
+     (not na(addOnDistFastAtr))
+ and (addOnDistFastAtr <= addOnCeilingFastAtrMult))
+
+addOnCeilingMidOk = (
+     (not na(addOnDistMidAtr))
+ and (addOnDistMidAtr <= addOnCeilingMidAtrMult))
+
+addOnCeilingOk = (
+     addOnCeilingUseMidConfirm
+     ? (addOnCeilingFastOk and addOnCeilingMidOk)
+     : addOnCeilingFastOk)
+
+addCandNow = (
+     enableAddOns
+ and pbInPos)
+
+// Concurrent room gate (input-driven; compatibility version still uses addOnCount)
+addRoomOk = (
+     addOnCount < addOnMaxConcurrent)
+
+addCooldownOk = (
+     not inAddOnCooldown)
+
+addChopOk = (
+     not noTradeChop)
+
+if addCandNow
+    addCandCnt += 1
+
+    if bigTrend
+        addBigTrendOkCnt += 1
+
+        if hasRealImpulse
+            addImpulseOkCnt += 1
+
+            if emaSepOkAddon
+                addSepOkCnt += 1
+
+                if addOnTouchedRecently
+                    addTouchRecentOkCnt += 1
+
+                    if addOnReclaimOk
+                        addReclaimOkCnt += 1
+
+                        if addOnProfitOk
+                            addProfitOkCnt += 1
+
+                            if addOnMfeOk
+                                addMfeOkCnt += 1
+
+                                if addOnCeilingOk
+                                    addCeilingOkCnt += 1
+
+                                    if addRoomOk
+                                        addRoomOkCnt += 1
+
+                                        if addCooldownOk
+                                            addCooldownOkCnt += 1
+
+                                            if addChopOk
+                                                addChopOkCnt += 1
+
+pbAddOnCond := (
+     enableAddOns
+     and pbInPos
+     and bigTrend
+     and hasRealImpulse
+     and emaSepOkAddon
+     and addOnTouchedRecently
+     and addOnReclaimOk
+     and addOnProfitOk
+     and addOnMfeOk
+     and addOnCeilingOk
+     and addRoomOk
+     and (not inAddOnCooldown)
+     and (not noTradeChop))
+
+if pbAddOnCond
+    addFinalCondCnt += 1
+
+// =======[BLOCK: ADDON_SIGNAL_END]=========
+
+
+// =======[BLOCK: ENTRY_ORCH_BEGIN]=======
+
+// =======[BLOCK: LATE_GATE_DIAG_STATE_BEGIN]=======
+// Declared early so ENTRY_ORCH can update; METRICS can display later.
+
+var int dbgLate_candPbBase     = 0
+var int dbgLate_candWeak       = 0
+var int dbgLate_candHasRm      = 0
+var int dbgLate_blocked        = 0
+var int dbgLate_candPbBaseBars = 0
+var int dbgLate_blockedBars    = 0
+
+// “ALL candidates” funnel (ignores pbWeakSetup) for truth-testing
+var int dbgLate_candHasRmAll     = 0
+var int dbgLate_blockedAll       = 0
+var int dbgLate_blockedAllGE     = 0
+var int dbgLate_candHasRmAllBars = 0
+var int dbgLate_blockedAllBars   = 0
+
+// =======[BLOCK: LATE_GATE_DIAG_STATE_END]=======
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy PB block → reroute diagnostics
+// NOTE:
+// - CONT is a flat root-entry engine.
+// - PB_BASE is also a flat root-entry engine.
+// - Counters kept alive for compatibility.
+// ─────────────────────────────────────────────────────────────────────────────
+var bool pbHadBaseBlockSinceFlat = false
+var int  pbLastBaseBlockBar      = na
+var int  pbBaseBlockCnt          = 0
+
+var int pbBlockToContCnt         = 0
+var int pbBlockToPbCnt           = 0
+var int pbBlockToAnyCnt          = 0
+
+pbBlockToEntryWindowBars = 12
+
+orchFlatNow  = (strategy.position_size == 0)
+orchFlatPrev = (nz(strategy.position_size[1]) == 0)
+
+if (orchFlatNow and orchFlatPrev)
+    pbHadBaseBlockSinceFlat := false
+    pbLastBaseBlockBar      := na
+
+pbBlockBarsSinceLast = (
+     (not na(pbLastBaseBlockBar))
+     ? (bar_index - pbLastBaseBlockBar)
+     : na)
+
+pbBlockIsRecent = (
+     (not na(pbBlockBarsSinceLast))
+     and (pbBlockBarsSinceLast <= pbBlockToEntryWindowBars))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routing
+// FLAT      -> CONT root OR PB_BASE root
+// IN POS    -> ADDON only
+// ─────────────────────────────────────────────────────────────────────────────
+orchContBaseSetupOk = (
+     (strategy.position_size == 0)
+     and trendUp
+     and bullStack
+     and (not noTradeChop)
+     and (not midEmaDriftChurn))
+
+// CONT quality gate
+contFastSlopeAtr = f_slopeAtr(emaFast, slopeBars, atrSafe)
+
+contSepAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? (math.abs(emaFast - emaMid) / atrSafe)
+     : na)
+
+contSlopeMinAtr = 0.05
+contSepMinAtr   = 0.18
+
+contSlopeStrong = (
+     not na(contFastSlopeAtr)
+     and contFastSlopeAtr >= contSlopeMinAtr)
+
+contSepStrong = (
+     not na(contSepAtr)
+     and contSepAtr >= contSepMinAtr)
+
+contQualityOk = (
+     contSlopeStrong
+     or contSepStrong
+     or vReversalCONT)
+
+orchContBaseEntryCond = (
+          orchContBaseSetupOk
+          and contSignalNow
+          and contQualityOk
+          )
+
+// PB setup is computed in PB_ENTRY.
+// Flat-state ownership belongs here in ORCH.
+orchPbBaseEntryCond = (
+     (strategy.position_size == 0)
+     and pbEntryCond)
+
+orchAddOnEntryCond = (
+     pbAddOnCond
+     and (strategy.position_size > 0)
+     and (strategy.position_size[1] > 0))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Latch chosen root path (for attribution / fill-path tracking)
+// 1 = PB_BASE
+// 2 = CONT
+// NOTE: activeBaseType is owned by POSITION_STATE now; do not redeclare here.
+// ─────────────────────────────────────────────────────────────────────────────
+var int   baseIntentLatch  = 0
+var float pbBaseRmRefLevel = na
+var float pbBaseRmRefAtr   = na
+var float pbBaseRmFillAtr  = na
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTRY_ORCH: Late-Reclaim Gate (PB_BASE root only)
+// ─────────────────────────────────────────────────────────────────────────────
+float pbLateRmNowAtr        = na
+float pbReclaimMarginAtrNow = na
+bool  pbLateGateOk          = true
+bool  pbLateGateEnabled     = false
+bool  pbLateBlockedNow      = false
+
+pbWeakSetupGate = (
+     pbWeakSetup
+     or pbWeakSetup[1])
+
+orchLateRefLevel = (
+     pbWeakSetupGate
+     ? weakConfirmLevel
+     : reclaimLevel)
+
+pbLateRmNowAtr := (
+     (not na(atrSafe))
+     and (atrSafe > 0.0)
+     and (not na(orchLateRefLevel))
+     ? ((close - orchLateRefLevel) / atrSafe)
+     : na)
+
+pbReclaimMarginAtrNow := pbLateRmNowAtr
+pbLateGateEnabled := (pbLateReclaimMinAtrX100 < 999)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diagnose funnel (candidate-time)
+// ─────────────────────────────────────────────────────────────────────────────
+dbgLate_candPbBaseNow = (
+     orchPbBaseEntryCond
+     and (not orchPbBaseEntryCond[1]))
+
+dbgLate_candWeakNow = (
+     dbgLate_candPbBaseNow
+     and pbWeakSetupGate)
+
+dbgLate_candHasRmNow = (
+     dbgLate_candWeakNow
+     and (not na(pbLateRmNowAtr)))
+
+dbgLate_blockedNow = (
+     dbgLate_candHasRmNow
+     and pbLateGateEnabled
+     and (pbLateRmNowAtr >= pbLateReclaimMinAtr))
+
+dbgLate_candHasRmAllNow = (
+     dbgLate_candPbBaseNow
+     and (not na(pbLateRmNowAtr)))
+
+dbgLate_blockedAllNow = (
+     dbgLate_candHasRmAllNow
+     and pbLateGateEnabled
+     and (pbLateRmNowAtr < pbLateReclaimMinAtr))
+
+dbgLate_blockedAllNowGE = (
+     dbgLate_candHasRmAllNow
+     and pbLateGateEnabled
+     and (pbLateRmNowAtr >= pbLateReclaimMinAtr))
+
+if dbgLate_candPbBaseNow
+    dbgLate_candPbBase += 1
+
+if dbgLate_candWeakNow
+    dbgLate_candWeak += 1
+
+if dbgLate_candHasRmNow
+    dbgLate_candHasRm += 1
+
+if dbgLate_blockedNow
+    dbgLate_blocked += 1
+
+if dbgLate_candHasRmAllNow
+    dbgLate_candHasRmAll += 1
+
+if dbgLate_blockedAllNow
+    dbgLate_blockedAll += 1
+
+if dbgLate_blockedAllNowGE
+    dbgLate_blockedAllGE += 1
+
+dbgLate_candPbBaseBarNow = orchPbBaseEntryCond
+
+dbgLate_blockedBarNow = (
+     orchPbBaseEntryCond
+     and pbLateGateEnabled
+     and pbWeakSetupGate
+     and (not na(pbLateRmNowAtr))
+     and (pbLateRmNowAtr >= pbLateReclaimMinAtr))
+
+dbgLate_candHasRmAllBarNow = (
+     orchPbBaseEntryCond
+     and (not na(pbLateRmNowAtr)))
+
+dbgLate_blockedAllBarNow = (
+     dbgLate_candHasRmAllBarNow
+     and pbLateGateEnabled
+     and (pbLateRmNowAtr < pbLateReclaimMinAtr))
+
+if dbgLate_candPbBaseBarNow
+    dbgLate_candPbBaseBars += 1
+
+if dbgLate_blockedBarNow
+    dbgLate_blockedBars += 1
+
+if dbgLate_candHasRmAllBarNow
+    dbgLate_candHasRmAllBars += 1
+
+if dbgLate_blockedAllBarNow
+    dbgLate_blockedAllBars += 1
+
+
+// =======[BLOCK: LATE_GATE_DIAG_STATS_BEGIN]=======
+
+var float dbgLate_rmMin = na
+var float dbgLate_rmMax = na
+var float dbgLate_rmSum = 0.0
+var int   dbgLate_rmCnt = 0
+
+if dbgLate_candHasRmNow
+    dbgLate_rmMin := (
+         na(dbgLate_rmMin)
+         ? pbLateRmNowAtr
+         : math.min(dbgLate_rmMin, pbLateRmNowAtr))
+    dbgLate_rmMax := (
+         na(dbgLate_rmMax)
+         ? pbLateRmNowAtr
+         : math.max(dbgLate_rmMax, pbLateRmNowAtr))
+    dbgLate_rmSum := (dbgLate_rmSum + pbLateRmNowAtr)
+    dbgLate_rmCnt := (dbgLate_rmCnt + 1)
+
+dbgLate_rmAvg = (
+     dbgLate_rmCnt > 0
+     ? (dbgLate_rmSum / dbgLate_rmCnt)
+     : na)
+
+var float dbgLate_allRmMin = na
+var float dbgLate_allRmMax = na
+var float dbgLate_allRmSum = 0.0
+var int   dbgLate_allRmCnt = 0
+
+if dbgLate_candHasRmAllNow
+    dbgLate_allRmMin := (
+         na(dbgLate_allRmMin)
+         ? pbLateRmNowAtr
+         : math.min(dbgLate_allRmMin, pbLateRmNowAtr))
+    dbgLate_allRmMax := (
+         na(dbgLate_allRmMax)
+         ? pbLateRmNowAtr
+         : math.max(dbgLate_allRmMax, pbLateRmNowAtr))
+    dbgLate_allRmSum := (dbgLate_allRmSum + pbLateRmNowAtr)
+    dbgLate_allRmCnt := (dbgLate_allRmCnt + 1)
+
+dbgLate_allRmAvg = (
+     dbgLate_allRmCnt > 0
+     ? (dbgLate_allRmSum / dbgLate_allRmCnt)
+     : na)
+
+var int dbgLate_blockedLT = 0
+
+dbgLate_blockedNowLT = (
+     dbgLate_candHasRmNow
+     and pbLateGateEnabled
+     and (pbLateRmNowAtr < pbLateReclaimMinAtr))
+
+if dbgLate_blockedNowLT
+    dbgLate_blockedLT += 1
+
+var int dbgLate_candWeakLag = 0
+
+dbgLate_candWeakLagNow = (
+     dbgLate_candPbBaseNow
+     and (pbWeakSetup or pbWeakSetup[1]))
+
+if dbgLate_candWeakLagNow
+    dbgLate_candWeakLag += 1
+
+// =======[BLOCK: LATE_GATE_DIAG_STATS_END]=======
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTUAL gate (PRIMARY): block when margin is AT/ABOVE min (weak + late)
+// ─────────────────────────────────────────────────────────────────────────────
+pbLateBlockedNow := (
+     pbLateGateEnabled
+     and pbWeakSetupGate
+     and (not na(pbLateRmNowAtr))
+     and (pbLateRmNowAtr >= pbLateReclaimMinAtr))
+
+pbLateGateOk := (not pbLateBlockedNow)
+
+orchPbBaseReady = (
+     orchPbBaseEntryCond
+     and pbLateGateOk
+     and (math.abs(emaFast - emaMid) >= (atrSafe * pbEmaSepAtrMult)))
+
+orchRootBothNow = (
+     orchContBaseEntryCond
+     and orchPbBaseReady)
+
+//orchRootPbWins = (
+//     orchPbBaseReady)
+orchRootPbWins = false //dedbug
+
+orchRootContWins = (
+     orchContBaseEntryCond
+     and (not orchPbBaseReady))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1) ROOT ENTRIES (flat only)
+// Parallel root engines:
+// - PB_BASE wins ties when both PB and CONT are valid
+// - CONT fires only when PB is not ready
+// ─────────────────────────────────────────────────────────────────────────────
+if orchRootPbWins
+    if pbHadBaseBlockSinceFlat and pbBlockIsRecent
+        pbBlockToPbCnt  += 1
+        pbBlockToAnyCnt += 1
+        pbHadBaseBlockSinceFlat := false
+        pbLastBaseBlockBar      := na
+
+    baseIntentLatch := 1
+    pbFillIntent := "PB_BASE"
+
+    pbBaseRmRefAtr := atrSafe
+    pbBaseRmRefLevel := (
+         pbWeakSetupGate
+         ? weakConfirmLevel
+         : reclaimLevel)
+
+    strategy.entry(pbIdBase, strategy.long, comment="PB Ent")
+
+else if orchRootContWins
+    baseIntentLatch := 2
+    pbFillIntent := "CONT"
+
+    if pbHadBaseBlockSinceFlat and pbBlockIsRecent
+        pbBlockToContCnt += 1
+        pbBlockToAnyCnt  += 1
+        pbHadBaseBlockSinceFlat := false
+        pbLastBaseBlockBar      := na
+
+    strategy.entry(pbIdCont, strategy.long, comment="C Ent")
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2) PB_BASE root blocked diagnostics (flat only)
+// ─────────────────────────────────────────────────────────────────────────────
+pbBaseBlockedByLateRmNow = (
+     orchPbBaseEntryCond
+     and pbLateBlockedNow)
+
+if pbBaseBlockedByLateRmNow
+    pbHadBaseBlockSinceFlat := true
+    pbLastBaseBlockBar      := bar_index
+    pbBaseBlockCnt          += 1
+
+pbBaseBlockedBySepNow = (
+     orchPbBaseEntryCond
+     and pbLateGateOk
+     and (math.abs(emaFast - emaMid) < (atrSafe * pbEmaSepAtrMult)))
+
+if pbBaseBlockedBySepNow
+    pbHadBaseBlockSinceFlat := true
+    pbLastBaseBlockBar      := bar_index
+    pbBaseBlockCnt          += 1
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) ADDONs (in-position only, compatibility version)
+// NOTE:
+// - single ADDON order id for now
+// - addOnCount / lastAddOnBar are owned by ADDON_SIGNAL
+// ─────────────────────────────────────────────────────────────────────────────
+if orchAddOnEntryCond
+    pbFillIntent := "PB_ADDON"
+    strategy.entry(pbIdAdd, strategy.long, comment="Ad Ent")
+
+    addOnCount := (addOnCount + 1)
+    lastAddOnBar := bar_index
+    lastAddEntryRefPrice := close
+
+
+// Detect actual root fill (0 → >0)
+baseFilledNow = (
+     (strategy.position_size > 0)
+     and (strategy.position_size[1] == 0))
+
+if baseFilledNow
+    activeBaseType := baseIntentLatch
+    baseIntentLatch := 0
+
+// =======[BLOCK: ENTRY_ORCH_END]=========
+
+
+// =======[BLOCK: EXITS_BEGIN]=======
+// Exits – Early Profit Protect + Trail + Impulse Decay + EMA Flip
+//
+// COMPATIBILITY VERSION:
+// - PB_BASE and CONT remain root entries
+// - ADDON uses a single shared entry id for now
+// - rolling 4-slot addon exit logic is temporarily disabled until the
+//   matching slot state + slot allocation architecture is rebuilt end-to-end
+//
+// Assumes POSITION_STATE already defines:
+// pbInPos, pbAvg, pbHighWater, pbLastHighBar, pbJustClosed
+//
+// Produces:
+// pbHardSlPrice, ppFloorFinal, ppTrailStop, gradBeFloor, pbFinalStop
+// Updates:
+// pbExitReasonLast (on pbJustClosed), lastPbExitBar (on pbJustClosed)
+
+var string pbExitReasonLast = ""
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared trade-state helpers used by exits
+// ─────────────────────────────────────────────────────────────────────────────
+pbProfitPct = (
+     pbInPos
+     and (not na(pbAvg))
+     and (pbAvg > 0)
+     ? ((close - pbAvg) / pbAvg) * 100.0
+     : na)
+
+pbMfePct = (
+     pbInPos
+     and (not na(pbAvg))
+     and (pbAvg > 0)
+     and (not na(pbHighWater))
+     ? ((pbHighWater - pbAvg) / pbAvg) * 100.0
+     : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 0) Hard SL baseline (risk cap)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pbHardSlPrice = (
+     pbInPos
+     ? (pbAvg * (1.0 - (pbSlPct / 100.0)))
+     : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1) Early Profit Protect (Floor) – activates on MFE
+// ─────────────────────────────────────────────────────────────────────────────
+ppActive = (
+     enableProfitProtect
+     and pbInPos
+     and (not na(pbMfePct))
+     and (pbMfePct >= ppStartMfePct))
+
+ppDen = (
+     (ppFullMfePct > ppStartMfePct)
+     ? (ppFullMfePct - ppStartMfePct)
+     : na)
+
+ppScaleRaw = (
+     (ppActive and (not na(ppDen)))
+     ? ((pbMfePct - ppStartMfePct) / ppDen)
+     : na)
+
+ppScale = (
+     na(ppScaleRaw)
+     ? 0.0
+     : math.min(1.0, math.max(0.0, ppScaleRaw)))
+
+ppLockPct = (
+     ppActive
+     ? (ppLockMinPct + ((ppLockMaxPct - ppLockMinPct) * ppScale))
+     : na)
+
+ppBeFloor = (
+     ppActive
+     ? (pbAvg * (1.0 + (ppBeBufferPct / 100.0)))
+     : na)
+
+ppProfitFloor = (
+     (ppActive and (not na(ppLockPct)))
+     ? (pbAvg * (1.0 + (ppLockPct / 100.0)))
+     : na)
+
+ppFloorFinal = (
+     ppActive
+     ? math.max(
+          na(ppBeFloor) ? pbAvg : ppBeFloor,
+          na(ppProfitFloor) ? pbAvg : ppProfitFloor)
+     : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2) PP Trail once MFE is meaningful (ATR and % – whichever is tighter)
+// ─────────────────────────────────────────────────────────────────────────────
+ppTrailActive = (
+     enablePpTrail
+     and pbInPos
+     and ppActive
+     and (not na(pbMfePct))
+     and (pbMfePct >= ppTrailStartMfePct))
+
+ppPctTrailStop = (
+     ppTrailActive
+     ? (pbHighWater * (1.0 - (ppTrailPct / 100.0)))
+     : na)
+
+ppAtrTrailStop = (
+     ppTrailActive
+     ? (pbHighWater - (atrSafe * ppTrailAtrMult))
+     : na)
+
+// tighter stop = higher price (closer to market) → take max
+ppTrailStop = (
+     ppTrailActive
+     ? math.max(
+          na(ppPctTrailStop) ? pbHighWater : ppPctTrailStop,
+          na(ppAtrTrailStop) ? pbHighWater : ppAtrTrailStop)
+     : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) Graduation BE floor
+// ─────────────────────────────────────────────────────────────────────────────
+gradBeActive = (
+     enableGraduation
+     and pbInPos
+     and (not na(pbMfePct))
+     and (pbMfePct >= gradBeMfePct))
+
+gradBeFloor = (
+     gradBeActive
+     ? (pbAvg * (1.0 + (gradBeBufferPct / 100.0)))
+     : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4) Final STOP: always-on HardSL, then tighten with floors/trail/grad
+// ─────────────────────────────────────────────────────────────────────────────
+pbBaseStop = (
+     pbInPos
+     ? pbHardSlPrice
+     : na)
+
+pbStopWithPpFloor = (
+     pbInPos
+     ? math.max(
+          pbBaseStop,
+          na(ppFloorFinal) ? pbBaseStop : ppFloorFinal)
+     : na)
+
+pbStopWithTrail = (
+     pbInPos
+     ? math.max(
+          pbStopWithPpFloor,
+          na(ppTrailStop) ? pbStopWithPpFloor : ppTrailStop)
+     : na)
+
+pbFinalStop = (
+     pbInPos
+     ? math.max(
+          pbStopWithTrail,
+          na(gradBeFloor) ? pbStopWithTrail : gradBeFloor)
+     : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4A) Root-entry stop/trail exits
+// ─────────────────────────────────────────────────────────────────────────────
+strategy.exit(
+     id         = "PB STOP/TRAIL BASE",
+     from_entry = pbIdBase,
+     stop       = pbFinalStop,
+     comment    = "PB Stp")
+
+strategy.exit(
+     id         = "PB STOP/TRAIL CONT",
+     from_entry = pbIdCont,
+     stop       = pbFinalStop,
+     comment    = "C Stp")
+
+strategy.exit(
+     id         = "PB STOP/TRAIL ADDON",
+     from_entry = pbIdAdd,
+     stop       = pbFinalStop,
+     comment    = "Ad Stp")
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5) Impulse Decay CLOSE: no new highs for N bars after PP active
+// ─────────────────────────────────────────────────────────────────────────────
+impBarsSinceHigh = (
+     (pbInPos and (not na(pbLastHighBar)))
+     ? (bar_index - pbLastHighBar)
+     : na)
+
+impProfitOk = (
+     pbInPos
+     and (not na(pbProfitPct))
+     and (pbProfitPct >= (-impMaxLossPct)))
+
+impulseDecayClose = (
+     enableImpulseDecayExit
+     and pbInPos
+     and ppActive
+     and (not na(impBarsSinceHigh))
+     and (impBarsSinceHigh >= impNoNewHighBars)
+     and impProfitOk)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6) EMA Flip Exit (close-based)
+// ─────────────────────────────────────────────────────────────────────────────
+flipLevel = (
+     emaFlipSource == "Close<Fast"
+     ? emaFast
+     : emaMid)
+
+flipCondRaw = (
+     pbInPos
+     and (close < flipLevel))
+
+flipTrendWeakOk = (
+     emaFlipRequireTrendWeak
+     ? (emaFast <= emaMid)
+     : true)
+
+flipMfeOk = (
+     pbInPos
+     and (not na(pbMfePct))
+     and (pbMfePct < emaFlipDisableIfMfePct))
+
+flipUnderPpFloor = (
+     pbInPos
+     and ppActive
+     and (not na(ppFloorFinal))
+     and (close < ppFloorFinal))
+
+flipProfitSmallOk = (
+     pbInPos
+     and (not na(pbProfitPct))
+     and (pbProfitPct <= emaFlipProfitMaxPct))
+
+emaFlipAllowed = (
+     enableEmaFlipExit
+     and pbInPos
+     and flipCondRaw
+     and flipTrendWeakOk
+     and flipMfeOk
+     and ((not ppActive) or flipUnderPpFloor or flipProfitSmallOk))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exit reason bus (used by METRICS)
+// NOTE: If both triggers happen same bar, prioritize EMA_FLIP.
+// ─────────────────────────────────────────────────────────────────────────────
+string pbExitReasonPending = ""
+
+if impulseDecayClose
+    pbExitReasonPending := "IMPULSE_DECAY"
+    strategy.close(pbIdBase, comment="PB Ext")
+    strategy.close(pbIdCont, comment="C Ext")
+    strategy.close(pbIdAdd,  comment="Ad Ext")
+
+if emaFlipAllowed
+    pbExitReasonPending := "EMA_FLIP"
+    strategy.close(pbIdBase, comment="PB Ext")
+    strategy.close(pbIdCont, comment="C Ext")
+    strategy.close(pbIdAdd,  comment="Ad Ext")
+
+if pbJustClosed
+    pbExitReasonLast := pbExitReasonPending
+    lastPbExitBar := bar_index
+
+// =======[BLOCK: EXITS_END]=========
+
+
+// =======[BLOCK: METRICS_BEGIN]=======
+// Metrics – Core + Attribution + Damage Diagnostics
+//
+// Owns ALL metrics state.
+// No tables, no plots.
+//
+// Current architecture:
+// - PB_BASE = flat root pullback/reclaim entry
+// - CONT    = flat root breakout entry
+// - ADDON   = in-position only
+//
+// Expects these to already exist (from earlier blocks):
+// pbInPos, pbAvg, pbHighWater, pbJustClosed
+// pbFinalStop, pbHardSlPrice, ppFloorFinal, ppTrailStop, gradBeFloor, pbExitReasonLast
+// pbLastFillPath, pbFillIntent
+// baseFilledNow, activeBaseType, tradeRootOrigin
+// reclaimLevel, atrSafe, emaFast, emaMid, rsiVal
+// dmgMfeMinPct, dmgExitCeilPct
+// pbBaseRmRefLevel, pbBaseRmRefAtr, pbBaseRmFillAtr
+// tradeHadAddonWeakSep
+// addAfterBaseCnt, addAfterContCnt   (legacy order-site counters; kept alive)
+// contFilledNow, pbAddonFilledNow, posIncreasedNow
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOT FILL COMPATIBILITY
+// PB root fill now happens when flat → > in position and fill path = PB_BASE
+// Keep legacy variable name pbPullbackFillCnt for table compatibility,
+// but its meaning is now “PB_BASE root fills”.
+// ─────────────────────────────────────────────────────────────────────────────
+pbBaseFilledNow = (
+     posIncreasedNow
+     and (strategy.position_size[1] == 0)
+     and (pbLastFillPath == "PB_BASE"))
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HIST (NO ARRAYS): PB_BASE LowMFE HARD_SL by reclaim margin (ATR)
+// bins: <0, 0-0.05, 0.05-0.10, 0.10-0.20, 0.20-0.40, >=0.40
+// SUBSET: (LowMFE + HARD_SL + activeBaseType==1)
+// ─────────────────────────────────────────────────────────────────────────────
+var int   rmCnt0 = 0
+var int   rmCnt1 = 0
+var int   rmCnt2 = 0
+var int   rmCnt3 = 0
+var int   rmCnt4 = 0
+var int   rmCnt5 = 0
+
+var float rmUsd0 = 0.0
+var float rmUsd1 = 0.0
+var float rmUsd2 = 0.0
+var float rmUsd3 = 0.0
+var float rmUsd4 = 0.0
+var float rmUsd5 = 0.0
+
+// PB_BASE ALL trades – net P&L by reclaim margin (ATR)
+var int   rmAllCnt0 = 0
+var int   rmAllCnt1 = 0
+var int   rmAllCnt2 = 0
+var int   rmAllCnt3 = 0
+var int   rmAllCnt4 = 0
+var int   rmAllCnt5 = 0
+
+var float rmAllPnl0 = 0.0
+var float rmAllPnl1 = 0.0
+var float rmAllPnl2 = 0.0
+var float rmAllPnl3 = 0.0
+var float rmAllPnl4 = 0.0
+var float rmAllPnl5 = 0.0
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDON diagnostics (FILL-based)
+// ─────────────────────────────────────────────────────────────────────────────
+var int addFillCnt          = 0
+var int addWeakSepFillCnt   = 0
+var int addWeakSepTradeCnt  = 0
+var int addWeakSepLossCnt   = 0
+var bool tradeHadAddonWeakSep = false
+
+// NEW: add-on origin diagnostics based on ACTUAL fills
+var int addAfterBaseFillCnt = 0
+var int addAfterContFillCnt = 0
+
+addOriginTotalCnt = (
+     addAfterBaseFillCnt
+     + addAfterContFillCnt)
+
+addAfterBaseFrac = (
+     addOriginTotalCnt > 0
+     ? (float(addAfterBaseFillCnt) / float(addOriginTotalCnt))
+     : na)
+
+addAfterContFrac = (
+     addOriginTotalCnt > 0
+     ? (float(addAfterContFillCnt) / float(addOriginTotalCnt))
+     : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB_BASE entry snapshots (captured on PB_BASE root fill)
+// ─────────────────────────────────────────────────────────────────────────────
+var float pbSnapReclaimMarginAtr = na
+var float pbSnapFmSepAtr         = na
+var float pbSnapRangeAtr         = na
+var float pbSnapRsiDist50        = na
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A) EVENT SNAPSHOTS (previous-bar, evaluated on close)
+// ─────────────────────────────────────────────────────────────────────────────
+pbPrevAvg = (
+     pbAvg[1])
+
+pbPrevHighWater = (
+     pbHighWater[1])
+
+pbPrevQty = (
+     math.abs(strategy.position_size[1]))
+
+pbExitPctNow = (
+     (not na(pbPrevAvg))
+     and (pbPrevAvg > 0)
+     ? (((close / pbPrevAvg) - 1.0) * 100.0)
+     : na)
+
+pbMfePctNow = (
+     (not na(pbPrevAvg))
+     and (pbPrevAvg > 0)
+     and (not na(pbPrevHighWater))
+     ? (((pbPrevHighWater / pbPrevAvg) - 1.0) * 100.0)
+     : na)
+
+pbGivebackPctNow = (
+     (not na(pbExitPctNow))
+     and (not na(pbMfePctNow))
+     ? math.max(0.0, pbMfePctNow - pbExitPctNow)
+     : na)
+
+pbExitPnlUsdNow = (
+     (not na(pbPrevAvg))
+     and (not na(pbPrevQty))
+     ? ((close - pbPrevAvg) * pbPrevQty)
+     : na)
+
+pbMfeUsdNow = (
+     (not na(pbPrevAvg))
+     and (not na(pbPrevQty))
+     and (not na(pbPrevHighWater))
+     ? ((pbPrevHighWater - pbPrevAvg) * pbPrevQty)
+     : na)
+
+pbGivebackUsdNow = (
+     (not na(pbExitPnlUsdNow))
+     and (not na(pbMfeUsdNow))
+     ? math.max(0.0, pbMfeUsdNow - pbExitPnlUsdNow)
+     : na)
+
+pbIsDamagedWinner = (
+     (not na(pbExitPctNow))
+     and (not na(pbMfePctNow))
+     and (pbMfePctNow >= dmgMfeMinPct)
+     and (pbExitPctNow <= dmgExitCeilPct))
+
+
+// Align pbExitPnlUsdNow to TradingView authoritative closedtrades.profit()
+if pbJustClosed
+    lastIdxTv = strategy.closedtrades - 1
+    tvNetUsd = (
+         (lastIdxTv >= 0)
+         ? strategy.closedtrades.profit(lastIdxTv)
+         : na)
+
+    if not na(tvNetUsd)
+        pbExitPnlUsdNow := tvNetUsd
+
+
+// PB_BASE ALL trades – accumulate net P&L by reclaim margin (ATR)
+// gated by activeBaseType==1 so CONT doesn’t pollute PB_BASE bins
+if pbJustClosed and (activeBaseType == 1)
+    mAll = pbBaseRmFillAtr
+    pnlNow = pbExitPnlUsdNow
+
+    if (not na(mAll)) and (not na(pnlNow))
+        if (mAll < 0.00)
+            rmAllCnt0 += 1
+            rmAllPnl0 += pnlNow
+        else if (mAll < 0.05)
+            rmAllCnt1 += 1
+            rmAllPnl1 += pnlNow
+        else if (mAll < 0.10)
+            rmAllCnt2 += 1
+            rmAllPnl2 += pnlNow
+        else if (mAll < 0.20)
+            rmAllCnt3 += 1
+            rmAllPnl3 += pnlNow
+        else if (mAll < 0.40)
+            rmAllCnt4 += 1
+            rmAllPnl4 += pnlNow
+        else
+            rmAllCnt5 += 1
+            rmAllPnl5 += pnlNow
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// B) CORE COUNTERS
+// ─────────────────────────────────────────────────────────────────────────────
+var int   pbClosedTrades   = 0
+var int   pbDamagedWinners = 0
+var float pbGivebackSum    = 0.0
+var float pbDmgGivebackUsd = 0.0
+
+var float lossAbsTotalUsd      = 0.0
+var float lossHardSlUsd        = 0.0
+var float lossHardSlLowMfeUsd  = 0.0
+var float lossHardSlHighMfeUsd = 0.0
+var float lossPpFloorUsd       = 0.0
+var float lossPpTrailUsd       = 0.0
+var float lossGradBeUsd        = 0.0
+var float lossEmaFlipUsd       = 0.0
+var float lossImpDecayUsd      = 0.0
+
+var int lossHardSlLowMfeCnt  = 0
+var int lossHardSlHighMfeCnt = 0
+
+var int   lowMfeHardSlAfterBaseCnt = 0
+var float lowMfeHardSlAfterBaseUsd = 0.0
+var int   lowMfeHardSlAfterContCnt = 0
+var float lowMfeHardSlAfterContUsd = 0.0
+var int   lowMfeHardSlAfterAddCnt  = 0
+var float lowMfeHardSlAfterAddUsd  = 0.0
+var int   lowMfeHardSlAfterUnkCnt  = 0
+var float lowMfeHardSlAfterUnkUsd  = 0.0
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C) EXIT REASON & STOP SUBTYPE
+// ─────────────────────────────────────────────────────────────────────────────
+string pbExitReasonFinal = ""
+string pbStopTypeLast    = ""
+
+if pbJustClosed
+    pbExitReasonFinal := (
+         (pbExitReasonLast == "EMA_FLIP")
+         ? "EMA_FLIP"
+         : ((pbExitReasonLast == "IMPULSE_DECAY") ? "IMPULSE_DECAY" : "STOP/TRAIL"))
+else if (not pbInPos)
+    pbExitReasonFinal := ""
+
+if pbJustClosed and (pbExitReasonFinal == "STOP/TRAIL")
+    stopTol = syminfo.mintick * 2.0
+    finalPrev = pbFinalStop[1]
+    hardPrev  = pbHardSlPrice[1]
+    floorPrev = ppFloorFinal[1]
+    trailPrev = ppTrailStop[1]
+    gradPrev  = gradBeFloor[1]
+
+    pbStopTypeLast := "UNKNOWN"
+
+    if (not na(finalPrev)) and (not na(gradPrev)) and (math.abs(finalPrev - gradPrev) <= stopTol)
+        pbStopTypeLast := "GRAD_BE"
+    else if (not na(finalPrev)) and (not na(trailPrev)) and (math.abs(finalPrev - trailPrev) <= stopTol)
+        pbStopTypeLast := "PP_TRAIL"
+    else if (not na(finalPrev)) and (not na(floorPrev)) and (math.abs(finalPrev - floorPrev) <= stopTol)
+        pbStopTypeLast := "PP_FLOOR"
+    else if (not na(finalPrev)) and (not na(hardPrev)) and (math.abs(finalPrev - hardPrev) <= stopTol)
+        pbStopTypeLast := "HARD_SL"
+else if (not pbInPos)
+    pbStopTypeLast := ""
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D) LOSS ATTRIBUTION MATRIX (Entry × Exit)
+// EntryType: 0=PB_BASE, 1=CONT, 2=PB_ADDON, 3=UNK
+// ExitType : 0=SL, 1=FLOOR, 2=TRAIL, 3=EMA, 4=OTHER
+// NOTE: This still attributes by LAST FILL PATH, not root origin.
+// That is intentional for now so tables remain compatible.
+// ─────────────────────────────────────────────────────────────────────────────
+int lossMxCols = 5
+int lossMxRows = 4
+
+var int[]   lossMxCnt = array.new_int(lossMxRows * lossMxCols, 0)
+var float[] lossMxUsd = array.new_float(lossMxRows * lossMxCols, 0.0)
+
+mxIndex(e, x) =>
+    (e * lossMxCols) + x
+
+entryTypeIndex() =>
+    (
+         (pbLastFillPath == "PB_BASE")  ? 0
+       : (pbLastFillPath == "CONT")     ? 1
+       : (pbLastFillPath == "PB_ADDON") ? 2
+       : 3)
+
+exitTypeIndex() =>
+    if (pbExitReasonFinal == "STOP/TRAIL")
+        if (pbStopTypeLast == "HARD_SL")
+            0
+        else if (pbStopTypeLast == "PP_FLOOR")
+            1
+        else if (pbStopTypeLast == "PP_TRAIL")
+            2
+        else
+            4
+    else if (pbExitReasonFinal == "EMA_FLIP")
+        3
+    else
+        4
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E) WIN / LOSS EVENTS
+// ─────────────────────────────────────────────────────────────────────────────
+pbIsWin = (
+     pbJustClosed
+     and (pbExitPnlUsdNow > 0))
+
+pbIsLoss = (
+     pbJustClosed
+     and (pbExitPnlUsdNow < 0))
+
+if pbJustClosed
+    pbClosedTrades += 1
+
+    // Trade-level weak-sep add-on diagnostics
+    if tradeHadAddonWeakSep
+        addWeakSepTradeCnt += 1
+        if pbIsLoss
+            addWeakSepLossCnt += 1
+
+    tradeHadAddonWeakSep := false
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW: add-on fill detection (counts FILLS)
+// ─────────────────────────────────────────────────────────────────────────────
+addFilledNow = (
+     posIncreasedNow
+     and pbLastFillPath == "PB_ADDON")
+
+if addFilledNow
+    addFillCnt += 1
+
+    if activeBaseType == 1
+        addAfterBaseFillCnt += 1
+    else if activeBaseType == 2
+        addAfterContFillCnt += 1
+
+    // fill-level weak-sep count
+    if tradeHadAddonWeakSep
+        addWeakSepFillCnt += 1
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F) LOSS ATTRIBUTION (single authoritative pass)
+// ─────────────────────────────────────────────────────────────────────────────
+if pbIsLoss
+    lossAbsUsd = math.abs(pbExitPnlUsdNow)
+    lossAbsTotalUsd += lossAbsUsd
+
+    eIdx = entryTypeIndex()
+    xIdx = exitTypeIndex()
+    k = mxIndex(eIdx, xIdx)
+    array.set(lossMxCnt, k, array.get(lossMxCnt, k) + 1)
+    array.set(lossMxUsd, k, array.get(lossMxUsd, k) + lossAbsUsd)
+
+    isLossHardSl = (
+         (pbExitReasonFinal == "STOP/TRAIL")
+         and (pbStopTypeLast == "HARD_SL"))
+
+    isLowMfeHardSl = (
+         isLossHardSl
+         and (not na(pbMfePctNow))
+         and (pbMfePctNow < dmgMfeMinPct))
+
+    if pbExitReasonFinal == "STOP/TRAIL"
+        if pbStopTypeLast == "HARD_SL"
+            lossHardSlUsd += lossAbsUsd
+
+            if isLowMfeHardSl
+                lossHardSlLowMfeCnt += 1
+                lossHardSlLowMfeUsd += lossAbsUsd
+
+                if activeBaseType == 1
+                    lowMfeHardSlAfterBaseCnt += 1
+                    lowMfeHardSlAfterBaseUsd += lossAbsUsd
+
+                    m = pbBaseRmFillAtr
+                    if not na(m)
+                        if (m < 0.00)
+                            rmCnt0 += 1
+                            rmUsd0 += lossAbsUsd
+                        else if (m < 0.05)
+                            rmCnt1 += 1
+                            rmUsd1 += lossAbsUsd
+                        else if (m < 0.10)
+                            rmCnt2 += 1
+                            rmUsd2 += lossAbsUsd
+                        else if (m < 0.20)
+                            rmCnt3 += 1
+                            rmUsd3 += lossAbsUsd
+                        else if (m < 0.40)
+                            rmCnt4 += 1
+                            rmUsd4 += lossAbsUsd
+                        else
+                            rmCnt5 += 1
+                            rmUsd5 += lossAbsUsd
+
+                else if activeBaseType == 2
+                    lowMfeHardSlAfterContCnt += 1
+                    lowMfeHardSlAfterContUsd += lossAbsUsd
+                else if pbLastFillPath == "PB_ADDON"
+                    lowMfeHardSlAfterAddCnt += 1
+                    lowMfeHardSlAfterAddUsd += lossAbsUsd
+                else
+                    lowMfeHardSlAfterUnkCnt += 1
+                    lowMfeHardSlAfterUnkUsd += lossAbsUsd
+            else
+                lossHardSlHighMfeCnt += 1
+                lossHardSlHighMfeUsd += lossAbsUsd
+
+        else if pbStopTypeLast == "PP_FLOOR"
+            lossPpFloorUsd += lossAbsUsd
+        else if pbStopTypeLast == "PP_TRAIL"
+            lossPpTrailUsd += lossAbsUsd
+        else if pbStopTypeLast == "GRAD_BE"
+            lossGradBeUsd += lossAbsUsd
+
+    else if pbExitReasonFinal == "EMA_FLIP"
+        lossEmaFlipUsd += lossAbsUsd
+    else if pbExitReasonFinal == "IMPULSE_DECAY"
+        lossImpDecayUsd += lossAbsUsd
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G) DAMAGED WINNER ACCUMULATION
+// ─────────────────────────────────────────────────────────────────────────────
+if pbJustClosed and pbIsDamagedWinner
+    pbDamagedWinners += 1
+    pbGivebackSum += nz(pbGivebackPctNow)
+    pbDmgGivebackUsd += nz(pbGivebackUsdNow)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// H) ROOT FILL COUNTS + RM FILL LATCH (PB_BASE only)
+// Keep legacy variable name pbPullbackFillCnt for table compatibility,
+// but it now means PB_BASE ROOT fills.
+// ─────────────────────────────────────────────────────────────────────────────
+contFilledNow = (
+     posIncreasedNow
+     and pbLastFillPath == "CONT")
+
+var int contFillCnt       = 0
+var int pbPullbackFillCnt = 0
+
+if contFilledNow
+    contFillCnt += 1
+
+if pbBaseFilledNow
+    pbPullbackFillCnt += 1
+
+    pbBaseRmFillAtr := (
+         (not na(pbBaseRmRefLevel))
+         and (not na(pbBaseRmRefAtr))
+         and (pbBaseRmRefAtr > 0.0)
+         ? ((strategy.position_avg_price - pbBaseRmRefLevel) / pbBaseRmRefAtr)
+         : na)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PB_BASE entry snapshots (captured on PB_BASE root fill)
+// ─────────────────────────────────────────────────────────────────────────────
+if pbBaseFilledNow
+    pbSnapReclaimMarginAtr := (
+         (not na(atrSafe))
+         and (atrSafe > 0.0)
+         and (not na(reclaimLevel))
+         ? ((close - reclaimLevel) / atrSafe)
+         : na)
+
+    pbSnapFmSepAtr := (
+         (not na(atrSafe))
+         and (atrSafe > 0.0)
+         ? (math.abs(emaFast - emaMid) / atrSafe)
+         : na)
+
+    pbSnapRangeAtr := (
+         (not na(atrSafe))
+         and (atrSafe > 0.0)
+         ? ((high - low) / atrSafe)
+         : na)
+
+    pbSnapRsiDist50 := (
+         not na(rsiVal)
+         ? math.abs(rsiVal - 50.0)
+         : na)
+
+// =======[BLOCK: METRICS_END]=========
+
+
+// =======[BLOCK: DERIVED_METRICS_BEGIN]=======
+// Pure ratios / averages (NO state mutation)
+
+pbDamagedRateFrac = (
+     (pbClosedTrades > 0)
+     ? (pbDamagedWinners / pbClosedTrades)
+     : na)
+
+pbAvgGiveback = (
+     (pbDamagedWinners > 0)
+     ? (pbGivebackSum / pbDamagedWinners)
+     : na)
+
+// =======[BLOCK: DERIVED_METRICS_END]=========
+
+
+// =======[BLOCK: TABLES_BEGIN]=======
+// Tables (housekeeping pass 3)
+// Right side:
+//   - top-right    = CORE + PROFIT (always visible)
+//   - bottom-right = LOSS matrix
+// Left side:
+//   - paged DIAG table with consolidated pages
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DIAG page selector
+// ─────────────────────────────────────────────────────────────────────────────
+diagPage = input.string(
+     title   = "DIAG Page",
+     defval  = "PB_DIAG",
+     options = ["LATE_GATE", "PB_DIAG", "ADDON", "RM", "LOSS_PATHS"],
+     group   = grpDiag)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Formatting helpers
+// ─────────────────────────────────────────────────────────────────────────────
+f_int(x) =>
+    str.tostring(int(x))
+
+f_f2(x) =>
+    na(x) ? "na" : str.tostring(math.round(x * 100.0) / 100.0)
+
+f_pctFrac_0to1(x) =>
+    na(x) ? "na" : (str.tostring(math.round((x * 100.0) * 10.0) / 10.0) + "%")
+
+f_pctPts(x) =>
+    na(x) ? "na" : (str.tostring(math.round(x * 100.0) / 100.0) + "%")
+
+f_usd(x) =>
+    na(x) ? "na" : ("$" + str.tostring(math.round(x * 100.0) / 100.0))
+
+f_pair(cnt, usd) =>
+    (f_int(cnt) + " | " + f_usd(usd))
+
+f_frac(cnt, tot) =>
+    (
+         (tot > 0)
+         ? (cnt / tot)
+         : na)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Matrix getters (require mxIndex() from METRICS block)
+// ─────────────────────────────────────────────────────────────────────────────
+mxGetCnt(eIdx, xIdx) =>
+    array.get(lossMxCnt, mxIndex(eIdx, xIdx))
+
+mxGetUsd(eIdx, xIdx) =>
+    array.get(lossMxUsd, mxIndex(eIdx, xIdx))
+
+mxRowCnt(eIdx) =>
+    (
+         mxGetCnt(eIdx, 0)
+         + mxGetCnt(eIdx, 1)
+         + mxGetCnt(eIdx, 2)
+         + mxGetCnt(eIdx, 3)
+         + mxGetCnt(eIdx, 4))
+
+mxRowUsd(eIdx) =>
+    (
+         mxGetUsd(eIdx, 0)
+         + mxGetUsd(eIdx, 1)
+         + mxGetUsd(eIdx, 2)
+         + mxGetUsd(eIdx, 3)
+         + mxGetUsd(eIdx, 4))
+
+mxColCnt(xIdx) =>
+    (
+         mxGetCnt(0, xIdx)
+         + mxGetCnt(1, xIdx)
+         + mxGetCnt(2, xIdx)
+         + mxGetCnt(3, xIdx))
+
+mxColUsd(xIdx) =>
+    (
+         mxGetUsd(0, xIdx)
+         + mxGetUsd(1, xIdx)
+         + mxGetUsd(2, xIdx)
+         + mxGetUsd(3, xIdx))
+
+mxAllCnt() =>
+    (
+         mxRowCnt(0)
+         + mxRowCnt(1)
+         + mxRowCnt(2)
+         + mxRowCnt(3))
+
+mxAllUsd() =>
+    (
+         mxRowUsd(0)
+         + mxRowUsd(1)
+         + mxRowUsd(2)
+         + mxRowUsd(3))
+
+f_entryLabel(eIdx) =>
+    (
+         (eIdx == 0) ? "PB_BASE"
+       : (eIdx == 1) ? "CONT"
+       : (eIdx == 2) ? "ADD"
+       : "UNK")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Profit accumulators (stateful, table-owned)
+// idx: 0=PB_BASE, 1=CONT, 2=ADD, 3=UNK
+// ─────────────────────────────────────────────────────────────────────────────
+var float[] profUsd = array.new_float(4, 0.0)
+
+f_profIdxFromPath() =>
+    (
+         (pbLastFillPath == "PB_BASE")  ? 0
+       : (pbLastFillPath == "CONT")     ? 1
+       : (pbLastFillPath == "PB_ADDON") ? 2
+       : 3)
+
+f_profLabel(i) =>
+    (
+         (i == 0) ? "PB_BASE"
+       : (i == 1) ? "CONT"
+       : (i == 2) ? "ADD"
+       : "UNK")
+
+if pbJustClosed and pbIsWin and (not na(pbExitPnlUsdNow))
+    i = f_profIdxFromPath()
+    array.set(profUsd, i, array.get(profUsd, i) + pbExitPnlUsdNow)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tables
+// ─────────────────────────────────────────────────────────────────────────────
+var table tTopRight = table.new(
+     position     = position.middle_right,
+     columns      = 2,
+     rows         = 15,
+     frame_color  = color.black,
+     frame_width  = 1,
+     border_color = color.black,
+     border_width = 1)
+
+var table tLoss = table.new(
+     position     = position.bottom_right,
+     columns      = 6,
+     rows         = 6,
+     frame_color  = color.black,
+     frame_width  = 1,
+     border_color = color.black,
+     border_width = 1)
+
+var table tDiag = table.new(
+     position     = position.bottom_left,
+     columns      = 2,
+     rows         = 22,
+     frame_color  = color.black,
+     frame_width  = 1,
+     border_color = color.black,
+     border_width = 1)
+
+tblTextSize = size.tiny
+
+f_cell(_tbl, _c, _r, _t) =>
+    table.cell(
+         _tbl,
+         _c,
+         _r,
+         _t,
+         text_size  = tblTextSize,
+         text_color = color.black,
+         bgcolor    = color.new(color.white, 0))
+
+f_hdr(_tbl, _c, _r, _t) =>
+    table.cell(
+         _tbl,
+         _c,
+         _r,
+         _t,
+         text_size  = tblTextSize,
+         text_color = color.white,
+         bgcolor    = color.black)
+
+f_row(_tbl, _r, _k, _v) =>
+    f_cell(_tbl, 0, _r, _k)
+    f_cell(_tbl, 1, _r, _v)
+    (_r + 1)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render tables
+// ─────────────────────────────────────────────────────────────────────────────
+if (barstate.islastconfirmedhistory or barstate.islast)
+
+    table.clear(tTopRight, 0, 0, 1, 14)
+    table.clear(tLoss,     0, 0, 5, 5)
+    table.clear(tDiag,     0, 0, 1, 21)
+
+    // ========================================================================
+    // TOP-RIGHT TABLE — CORE + PROFIT
+    // ========================================================================
+    f_hdr(tTopRight, 0, 0, "CORE / PROFIT")
+    f_hdr(tTopRight, 1, 0, "Value")
+
+    rr = 1
+    rr := f_row(tTopRight, rr, "Damaged%",       f_pctFrac_0to1(pbDamagedRateFrac))
+    rr := f_row(tTopRight, rr, "Avg gvb%",       f_pctPts(pbAvgGiveback))
+    rr := f_row(tTopRight, rr, "PB_BASE Fills",  f_int(pbPullbackFillCnt))
+    rr := f_row(tTopRight, rr, "CONT Fills",     f_int(contFillCnt))
+    rr := f_row(tTopRight, rr, "ADD Fills",      f_int(addFillCnt))
+    rr := f_row(tTopRight, rr, "LowMFE SL PB",   f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
+    rr := f_row(tTopRight, rr, "LowMFE SL CONT", f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
+    rr := f_row(tTopRight, rr, "LowMFE SL ADD",  f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
+    rr := f_row(tTopRight, rr, "Dmg gvb$",       f_usd(pbDmgGivebackUsd))
+    rr := f_row(tTopRight, rr, "PB Profit $",    f_usd(array.get(profUsd, 0)))
+    rr := f_row(tTopRight, rr, "CONT Profit $",  f_usd(array.get(profUsd, 1)))
+    rr := f_row(tTopRight, rr, "ADD Profit $",   f_usd(array.get(profUsd, 2)))
+    rr := f_row(tTopRight, rr, "UNK Profit $",   f_usd(array.get(profUsd, 3)))
+    rr := f_row(tTopRight, rr, "Profit TOT $",   f_usd(array.get(profUsd, 0) + array.get(profUsd, 1) + array.get(profUsd, 2) + array.get(profUsd, 3)))
+
+    // ========================================================================
+    // BOTTOM-RIGHT TABLE — LOSS MATRIX ONLY
+    // ========================================================================
+    f_hdr(tLoss, 0, 0, "Loss mx")
+    f_hdr(tLoss, 1, 0, "SL")
+    f_hdr(tLoss, 2, 0, "FLOOR")
+    f_hdr(tLoss, 3, 0, "TRAIL")
+    f_hdr(tLoss, 4, 0, "EMA")
+    f_hdr(tLoss, 5, 0, "TOT")
+
+    // rows 1..4
+    for e = 0 to 3
+        rr2 = (1 + e)
+        f_cell(tLoss, 0, rr2, f_entryLabel(e))
+        for x = 0 to 3
+            f_cell(tLoss, (1 + x), rr2, f_pair(mxGetCnt(e, x), mxGetUsd(e, x)))
+        f_cell(tLoss, 5, rr2, f_pair(mxRowCnt(e), mxRowUsd(e)))
+
+    // totals row 5
+    f_hdr(tLoss, 0, 5, "TOT")
+    for x = 0 to 3
+        f_cell(tLoss, (1 + x), 5, f_pair(mxColCnt(x), mxColUsd(x)))
+    f_cell(tLoss, 5, 5, f_pair(mxAllCnt(), mxAllUsd()))
+
+    // ========================================================================
+    // LEFT DIAG TABLE — consolidated pages
+    // ========================================================================
+    f_hdr(tDiag, 0, 0, str.format("Diag ({0})", diagPage))
+    f_hdr(tDiag, 1, 0, "Value")
+
+    r = 1
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PAGE: LATE_GATE
+    // ─────────────────────────────────────────────────────────────────────────
+    if diagPage == "LATE_GATE"
+        minAtrStr = (
+             str.tostring(pbLateReclaimMinAtrX100)
+             + " | "
+             + f_f2(pbLateReclaimMinAtr))
+        r := f_row(tDiag, r, "MinAtr x100|f",      minAtrStr)
+        r := f_row(tDiag, r, "Enabled",            str.tostring(pbLateGateEnabled))
+        r := f_row(tDiag, r, "CandPbBase",         f_int(dbgLate_candPbBase))
+        r := f_row(tDiag, r, "CandWeak",           f_int(dbgLate_candWeak))
+        r := f_row(tDiag, r, "CandHasRm",          f_int(dbgLate_candHasRm))
+        r := f_row(tDiag, r, "Blocked",            f_int(dbgLate_blocked))
+        r := f_row(tDiag, r, "BlkRate vs PbBase",  f_pctFrac_0to1(f_frac(dbgLate_blocked, dbgLate_candPbBase)))
+        r := f_row(tDiag, r, "BlkRate vs HasRm",   f_pctFrac_0to1(f_frac(dbgLate_blocked, dbgLate_candHasRm)))
+        r := f_row(tDiag, r, "rmNowAtr",           f_f2(pbLateRmNowAtr))
+        r := f_row(tDiag, r, "blockedNow",         str.tostring(pbLateBlockedNow))
+        r := f_row(tDiag, r, "CandWeak(+1bar)",    f_int(dbgLate_candWeakLag))
+        r := f_row(tDiag, r, "PBBlkCnt",           f_int(pbBaseBlockCnt))
+        r := f_row(tDiag, r, "Blk->CONT",          f_int(pbBlockToContCnt))
+        r := f_row(tDiag, r, "Blk->PB",            f_int(pbBlockToPbCnt))
+        r := f_row(tDiag, r, "Blk->Any",           f_int(pbBlockToAnyCnt))
+        r := f_row(tDiag, r, "Blk->CONT %",        f_pctFrac_0to1(f_frac(pbBlockToContCnt, pbBaseBlockCnt)))
+        r := f_row(tDiag, r, "Blk->PB %",          f_pctFrac_0to1(f_frac(pbBlockToPbCnt, pbBaseBlockCnt)))
+        r := f_row(tDiag, r, "Blk->Any %",         f_pctFrac_0to1(f_frac(pbBlockToAnyCnt, pbBaseBlockCnt)))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PAGE: PB_DIAG
+    // ─────────────────────────────────────────────────────────────────────────
+    else if diagPage == "PB_DIAG"
+        r := f_row(tDiag, r, "PB cand TOT",        f_int(pbBaseCandidateCnt))
+        r := f_row(tDiag, r, "PB blocked",         f_int(pbBaseBlockedCnt))
+        r := f_row(tDiag, r, "PB cand BRAID",      f_int(pbBaseCandEmaBraidCnt))
+        r := f_row(tDiag, r, "PB cand STALL",      f_int(pbBaseCandRsiStallCnt))
+        r := f_row(tDiag, r, "PB cand B+S",        f_int(pbBaseCandBraidRsiCnt))
+        r := f_row(tDiag, r, "PB cand SepOK",      f_int(pbBaseCandBraidSepOkCnt))
+        r := f_row(tDiag, r, "PB cand SlpOK",      f_int(pbBaseCandBraidSlopeOkCnt))
+        r := f_row(tDiag, r, "EMA comp sep",       f_int(pbBaseCandEmaCompSepCnt))
+        r := f_row(tDiag, r, "EMA comp slp",       f_int(pbBaseCandEmaCompSlopeCnt))
+        r := f_row(tDiag, r, "EMA comp BOTH",      f_int(pbBaseCandEmaCompBothCnt))
+        r := f_row(tDiag, r, "Donch EXH",          f_int(pbBaseCandDonchExhCnt))
+        r := f_row(tDiag, r, "RSI+Donch",          f_int(pbBaseCandRsiDonchBothCnt))
+        r := f_row(tDiag, r, "PB entry B+S",       f_int(pbBaseEntryBraidRsiCnt))
+        r := f_row(tDiag, r, "RSI weak dist%",     f_pctFrac_0to1(f_frac(pbBaseCandRsiWeakDistCnt,  pbBaseCandidateCnt)))
+        r := f_row(tDiag, r, "RSI weak slp%",      f_pctFrac_0to1(f_frac(pbBaseCandRsiWeakSlopeCnt, pbBaseCandidateCnt)))
+        r := f_row(tDiag, r, "Sep/ATR",            f_f2((atrSafe > 0.0) ? (math.abs(emaFast - emaMid) / atrSafe) : na))
+        r := f_row(tDiag, r, "SepThr",             f_f2(pbEmaSepAtrMult))
+        r := f_row(tDiag, r, "SepPass",            str.tostring(math.abs(emaFast - emaMid) >= (atrSafe * pbEmaSepAtrMult)))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PAGE: ADDON
+    // ─────────────────────────────────────────────────────────────────────────
+    else if diagPage == "ADDON"
+        r := f_row(tDiag, r, "ADD Fills",          f_int(addFillCnt))
+        r := f_row(tDiag, r, "ADD Orig TOT",       f_int(addOriginTotalCnt))
+        r := f_row(tDiag, r, "ADD after PB",       f_int(addAfterBaseFillCnt))
+        r := f_row(tDiag, r, "ADD after CONT",     f_int(addAfterContFillCnt))
+        r := f_row(tDiag, r, "After PB %",         f_pctFrac_0to1(addAfterBaseFrac))
+        r := f_row(tDiag, r, "After CONT %",       f_pctFrac_0to1(addAfterContFrac))
+        r := f_row(tDiag, r, "Add Cand",           f_int(addCandCnt))
+        r := f_row(tDiag, r, "BigTrend OK",        f_int(addBigTrendOkCnt))
+        r := f_row(tDiag, r, "Impulse OK",         f_int(addImpulseOkCnt))
+        r := f_row(tDiag, r, "TouchRecent OK",     f_int(addTouchRecentOkCnt))
+        r := f_row(tDiag, r, "Reclaim OK",         f_int(addReclaimOkCnt))
+        r := f_row(tDiag, r, "Profit OK",          f_int(addProfitOkCnt))
+        r := f_row(tDiag, r, "MFE OK",             f_int(addMfeOkCnt))
+        r := f_row(tDiag, r, "Room OK",            f_int(addRoomOkCnt))
+        r := f_row(tDiag, r, "Cooldown OK",        f_int(addCooldownOkCnt))
+        r := f_row(tDiag, r, "Chop OK",            f_int(addChopOkCnt))
+        r := f_row(tDiag, r, "Final Cond",         f_int(addFinalCondCnt))
+        r := f_row(tDiag, r, "Final/Cand %",       f_pctFrac_0to1(f_frac(addFinalCondCnt, addCandCnt)))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PAGE: RM
+    // ─────────────────────────────────────────────────────────────────────────
+    else if diagPage == "RM"
+        rmCntTot = (rmCnt0 + rmCnt1 + rmCnt2 + rmCnt3 + rmCnt4 + rmCnt5)
+        rmUsdTot = (rmUsd0 + rmUsd1 + rmUsd2 + rmUsd3 + rmUsd4 + rmUsd5)
+        rmAllCntTot = (rmAllCnt0 + rmAllCnt1 + rmAllCnt2 + rmAllCnt3 + rmAllCnt4 + rmAllCnt5)
+        rmAllPnlTot = (rmAllPnl0 + rmAllPnl1 + rmAllPnl2 + rmAllPnl3 + rmAllPnl4 + rmAllPnl5)
+
+        r := f_row(tDiag, r, "LateMinAtr x100",    f_int(pbLateReclaimMinAtrX100))
+        r := f_row(tDiag, r, "LateGate Cand|Blk",  str.format("{0} | {1}", f_int(dbgLate_candPbBase), f_int(dbgLate_blocked)))
+        r := f_row(tDiag, r, "LMFE <0.00",         str.format("{0} | {1}", f_int(rmCnt0),    f_usd(rmUsd0)))
+        r := f_row(tDiag, r, "LMFE 0.00-0.05",     str.format("{0} | {1}", f_int(rmCnt1),    f_usd(rmUsd1)))
+        r := f_row(tDiag, r, "LMFE 0.05-0.10",     str.format("{0} | {1}", f_int(rmCnt2),    f_usd(rmUsd2)))
+        r := f_row(tDiag, r, "LMFE 0.10-0.20",     str.format("{0} | {1}", f_int(rmCnt3),    f_usd(rmUsd3)))
+        r := f_row(tDiag, r, "LMFE 0.20-0.40",     str.format("{0} | {1}", f_int(rmCnt4),    f_usd(rmUsd4)))
+        r := f_row(tDiag, r, "LMFE >=0.40",        str.format("{0} | {1}", f_int(rmCnt5),    f_usd(rmUsd5)))
+        r := f_row(tDiag, r, "LMFE TOT",           str.format("{0} | {1}", f_int(rmCntTot),  f_usd(rmUsdTot)))
+        r := f_row(tDiag, r, "PnL <0.00",          str.format("{0} | {1}", f_int(rmAllCnt0), f_usd(rmAllPnl0)))
+        r := f_row(tDiag, r, "PnL 0.00-0.05",      str.format("{0} | {1}", f_int(rmAllCnt1), f_usd(rmAllPnl1)))
+        r := f_row(tDiag, r, "PnL 0.05-0.10",      str.format("{0} | {1}", f_int(rmAllCnt2), f_usd(rmAllPnl2)))
+        r := f_row(tDiag, r, "PnL 0.10-0.20",      str.format("{0} | {1}", f_int(rmAllCnt3), f_usd(rmAllPnl3)))
+        r := f_row(tDiag, r, "PnL 0.20-0.40",      str.format("{0} | {1}", f_int(rmAllCnt4), f_usd(rmAllPnl4)))
+        r := f_row(tDiag, r, "PnL >=0.40",         str.format("{0} | {1}", f_int(rmAllCnt5), f_usd(rmAllPnl5)))
+        r := f_row(tDiag, r, "PnL TOT",            str.format("{0} | {1}", f_int(rmAllCntTot), f_usd(rmAllPnlTot)))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PAGE: LOSS_PATHS
+    // ─────────────────────────────────────────────────────────────────────────
+    else if diagPage == "LOSS_PATHS"
+        r := f_row(tDiag, r, "Loss ABS TOT$",      f_usd(lossAbsTotalUsd))
+        r := f_row(tDiag, r, "Loss HARD_SL$",      f_usd(lossHardSlUsd))
+        r := f_row(tDiag, r, "Loss PP_FLOOR$",     f_usd(lossPpFloorUsd))
+        r := f_row(tDiag, r, "Loss PP_TRAIL$",     f_usd(lossPpTrailUsd))
+        r := f_row(tDiag, r, "Loss GRAD_BE$",      f_usd(lossGradBeUsd))
+        r := f_row(tDiag, r, "Loss EMA_FLIP$",     f_usd(lossEmaFlipUsd))
+        r := f_row(tDiag, r, "Loss IMP_DEC$",      f_usd(lossImpDecayUsd))
+        r := f_row(tDiag, r, "SL LowMFE cnt|$",    f_pair(lossHardSlLowMfeCnt,  lossHardSlLowMfeUsd))
+        r := f_row(tDiag, r, "SL HighMFE cnt|$",   f_pair(lossHardSlHighMfeCnt, lossHardSlHighMfeUsd))
+        r := f_row(tDiag, r, "LowMFE SL PB_BASE",  f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
+        r := f_row(tDiag, r, "LowMFE SL CONT",     f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
+        r := f_row(tDiag, r, "LowMFE SL ADD",      f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
+        r := f_row(tDiag, r, "LowMFE SL UNK",      f_pair(lowMfeHardSlAfterUnkCnt,  lowMfeHardSlAfterUnkUsd))
+
+// =======[BLOCK: TABLES_END]=========
+
+
+// =======[BLOCK: DEBUG_MARKERS_BEGIN]=======
+
+f_dbg(_cond, _y, _txt, _isOn) =>
+    if _cond
+        lblStyle = label.style_label_up
+        lblColor = color.new(color.blue, 0)
+
+        if not _isOn
+            lblStyle := label.style_label_down
+            lblColor := color.new(color.gray, 35)
+
+        label.new(
+             x          = bar_index,
+             y          = _y,
+             text       = _txt,
+             xloc       = xloc.bar_index,
+             yloc       = yloc.price,
+             style      = lblStyle,
+             textcolor  = color.white,
+             color      = lblColor,
+             size       = size.tiny)
+
+if showEntryDebug
+    d_on  = (midEmaDriftChurn and (not nz(midEmaDriftChurn[1], false)))
+    d_off = ((not midEmaDriftChurn) and nz(midEmaDriftChurn[1], false))
+
+    b_on  = (bigTrend and (not nz(bigTrend[1], false)))
+    b_off = ((not bigTrend) and nz(bigTrend[1], false))
+
+    a_on  = (pbAddOnCond and (not nz(pbAddOnCond[1], false)))
+    a_off = ((not pbAddOnCond) and nz(pbAddOnCond[1], false))
+
+    c_on  = (noTradeChop and (not nz(noTradeChop[1], false)))
+    c_off = ((not noTradeChop) and nz(noTradeChop[1], false))
+
+    t_on  = (pbTouchedRecently and (not nz(pbTouchedRecently[1], false)))
+    t_off = ((not pbTouchedRecently) and nz(pbTouchedRecently[1], false))
+
+    r_on  = (reclaimOkBase and (not nz(reclaimOkBase[1], false)))
+    r_off = ((not reclaimOkBase) and nz(reclaimOkBase[1], false))
+
+    k_on  = (inPbCooldown and (not nz(inPbCooldown[1], false)))
+    k_off = ((not inPbCooldown) and nz(inPbCooldown[1], false))
+
+    y0 = high + (atrSafe * 0.25)
+    y1 = high + (atrSafe * 0.50)
+    y2 = high + (atrSafe * 0.75)
+    y3 = high + (atrSafe * 1.00)
+    y4 = high + (atrSafe * 1.25)
+    y5 = high + (atrSafe * 1.50)
+    y6 = high + (atrSafe * 1.75)
+    y7 = high + (atrSafe * 2.00)
+
+    f_dbg(d_on,  y1, "D", true)
+    f_dbg(d_off, y1, "d", false)
+
+    f_dbg(b_on,  y2, "B", true)
+    f_dbg(b_off, y2, "b", false)
+
+    f_dbg(a_on,  y3, "A", true)
+    f_dbg(a_off, y3, "a", false)
+
+    f_dbg(c_on,  y4, "C", true)
+    f_dbg(c_off, y4, "c", false)
+
+    f_dbg(t_on,  y5, "T", true)
+    f_dbg(t_off, y5, "t", false)
+
+    f_dbg(r_on,  y6, "R", true)
+    f_dbg(r_off, y6, "r", false)
+
+    f_dbg(k_on,  y7, "K", true)
+    f_dbg(k_off, y7, "k", false)
+
+// =======[BLOCK: DEBUG_MARKERS_END]=========
+
+
