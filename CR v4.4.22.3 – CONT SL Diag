@@ -1063,49 +1063,85 @@ emaSepWeakAddon = (
 
 
 // =======[BLOCK: POSITION_STATE_BEGIN]=======
-// Tracks position lifecycle and key state variables used by EXITS, METRICS and ADDON engines
+// Position / fill-state ownership
+//
+// Purpose:
+// - maintain canonical in-position state
+// - maintain fill-path attribution for METRICS / TABLES
+// - support concurrent root-entry candidates:
+//     1 = PB_BASE
+//     2 = CONT
+// - keep ADDON as a separate in-position fill path
+//
+// Upstream assumptions:
+// - ENTRY_ORCH sets baseIntentLatch before root orders
+// - ENTRY_ORCH may still set pbFillIntent for compatibility
+//
+// Downstream consumers:
+// - EXITS
+// - METRICS
+// - TABLES
 
 // ─────────────────────────────────────────
-// Core position flags
+// Core position state
 // ─────────────────────────────────────────
-var bool  pbInPos        = false
-var float pbAvg          = na
-var float pbHighWater    = na
-var int   pbLastHighBar  = na
+var bool  pbInPos       = false
+var float pbAvg         = na
+var float pbHighWater   = na
+var int   pbLastHighBar = na
 
 // ─────────────────────────────────────────
-// Fill path attribution
-// (used by metrics + loss matrix)
+// Canonical fill-path state
+// pbLastFillPath = last actual fill path seen by the strategy
+// activeBaseType = root origin currently owning the open position
+//
+// Conventions:
+//   activeBaseType:
+//     0 = none / flat
+//     1 = PB_BASE
+//     2 = CONT
+//
+//   pbLastFillPath:
+//     "PB_BASE" | "CONT" | "PB_ADDON" | "UNK"
 // ─────────────────────────────────────────
-var string pbLastFillPath = "UNK"     // PB_BASE | CONT | PB_ADDON | UNK
-var string pbFillIntent   = "UNK"     // temporary intent set by ORCH before entry
+var string pbLastFillPath = "UNK"
+var string pbFillIntent   = "UNK"   // compatibility relay; ORCH may still use it
+var int    activeBaseType = 0
+var int    baseIntentLatch = 0
 
-// NOTE:
-// activeBaseType must NOT be re-declared here if it already exists elsewhere.
-// Keep only one global declaration in the whole script.
-
 // ─────────────────────────────────────────
-// Position change detection
+// Raw position deltas
 // ─────────────────────────────────────────
-posSizeNow  = strategy.position_size
+posSizeNow = strategy.position_size
 posSizePrev = nz(strategy.position_size[1])
 
+posDeltaNow = (
+     posSizeNow - posSizePrev)
+
 posIncreasedNow = (
-     posSizeNow > posSizePrev)
+     posDeltaNow > 0)
 
 posDecreasedNow = (
-     posSizeNow < posSizePrev)
+     posDeltaNow < 0)
 
 posOpenedNow = (
-     posSizeNow > 0
- and posSizePrev == 0)
+     (posSizeNow > 0)
+     and (posSizePrev == 0))
 
 posClosedNow = (
-     posSizeNow == 0
- and posSizePrev > 0)
+     (posSizeNow == 0)
+     and (posSizePrev > 0))
+
+// Canonical fill events
+rootFilledNow = (
+     posOpenedNow)
+
+addonFilledNow = (
+     (posIncreasedNow)
+     and (posSizePrev > 0))
 
 // ─────────────────────────────────────────
-// State updates
+// Live position state
 // ─────────────────────────────────────────
 pbInPos := (
      posSizeNow > 0)
@@ -1116,13 +1152,12 @@ pbAvg := (
      : na)
 
 // ─────────────────────────────────────────
-// High-water mark tracking
+// High-water tracking
 // ─────────────────────────────────────────
-if posOpenedNow
+if rootFilledNow
     pbHighWater   := high
     pbLastHighBar := bar_index
-
-if pbInPos and (na(pbHighWater) or high > pbHighWater)
+else if pbInPos and ((na(pbHighWater)) or (high > pbHighWater))
     pbHighWater   := high
     pbLastHighBar := bar_index
 
@@ -1131,37 +1166,59 @@ if posClosedNow
     pbLastHighBar := na
 
 // ─────────────────────────────────────────
-// Fill path capture
-// ORCH sets pbFillIntent before order.
-// When fill happens we latch it.
+// Root fill attribution
+//
+// IMPORTANT:
+// For new root fills, prefer baseIntentLatch because PB_BASE and CONT
+// are concurrent root candidates and that latch is the clean source of truth.
+// Do not infer root origin backward from pbLastFillPath.
+// ─────────────────────────────────────────
+if rootFilledNow
+    pbLastFillPath := (
+         baseIntentLatch == 1
+         ? "PB_BASE"
+         : baseIntentLatch == 2
+           ? "CONT"
+           : pbFillIntent != "UNK"
+             ? pbFillIntent
+             : "UNK")
+
+    activeBaseType := (
+         baseIntentLatch == 1
+         ? 1
+         : baseIntentLatch == 2
+           ? 2
+           : activeBaseType)
+
+// ─────────────────────────────────────────
+// Add-on fill attribution
+//
+// For add-ons, keep separate from root-origin ownership.
+// activeBaseType must remain the original root engine while in position.
+// ─────────────────────────────────────────
+if addonFilledNow
+    pbLastFillPath := (
+         pbFillIntent == "PB_ADDON"
+         ? "PB_ADDON"
+         : pbLastFillPath)
+
+// ─────────────────────────────────────────
+// Reset transient compatibility relay after any actual fill
 // ─────────────────────────────────────────
 if posIncreasedNow
-    pbLastFillPath := (
-         pbFillIntent != "UNK"
-         ? pbFillIntent
-         : "UNK")
     pbFillIntent := "UNK"
 
 // ─────────────────────────────────────────
-// Base entry classification
-// latch when position opens
+// Flat reset
 // ─────────────────────────────────────────
-var int activeBaseType = 0
-
-if posOpenedNow
-    activeBaseType := (
-         pbLastFillPath == "CONT"
-         ? 2
-         : 1)
-
 if posClosedNow
     activeBaseType := 0
 
 // ─────────────────────────────────────────
-// Trade close event marker
-// used by metrics block
+// Close-event marker for METRICS
 // ─────────────────────────────────────────
-pbJustClosed = posClosedNow
+pbJustClosed = (
+     posClosedNow)
 
 // =======[BLOCK: POSITION_STATE_END]=======
 
@@ -2011,11 +2068,11 @@ var int dbgLate_blockedAllBars   = 0
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Legacy PB block → reroute diagnostics
+// Compatibility counters for PB-block reroute observation
 // NOTE:
-// - CONT is a flat root-entry engine.
-// - PB_BASE is also a flat root-entry engine.
-// - Counters kept alive for compatibility.
+// - CONT is a flat root-entry engine
+// - PB_BASE is also a flat root-entry engine
+// - Keep these alive until METRICS/TABLES are fully streamlined
 // ─────────────────────────────────────────────────────────────────────────────
 var bool pbHadBaseBlockSinceFlat = false
 var int  pbLastBaseBlockBar      = na
@@ -2046,8 +2103,8 @@ pbBlockIsRecent = (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Routing
-// FLAT      -> CONT root OR PB_BASE root
-// IN POS    -> ADDON only
+// FLAT   -> PB_BASE root OR CONT root
+// IN POS -> ADDON only
 // ─────────────────────────────────────────────────────────────────────────────
 orchContBaseSetupOk = (
      (strategy.position_size == 0)
@@ -2068,12 +2125,12 @@ contSlopeMinAtr = 0.05
 contSepMinAtr   = 0.18
 
 contSlopeStrong = (
-     not na(contFastSlopeAtr)
-     and contFastSlopeAtr >= contSlopeMinAtr)
+     (not na(contFastSlopeAtr))
+     and (contFastSlopeAtr >= contSlopeMinAtr))
 
 contSepStrong = (
-     not na(contSepAtr)
-     and contSepAtr >= contSepMinAtr)
+     (not na(contSepAtr))
+     and (contSepAtr >= contSepMinAtr))
 
 contQualityOk = (
      contSlopeStrong
@@ -2081,10 +2138,9 @@ contQualityOk = (
      or vReversalCONT)
 
 orchContBaseEntryCond = (
-          orchContBaseSetupOk
-          and contSignalNow
-          and contQualityOk
-          )
+     orchContBaseSetupOk
+     and contSignalNow
+     and contQualityOk)
 
 // PB setup is computed in PB_ENTRY.
 // Flat-state ownership belongs here in ORCH.
@@ -2099,12 +2155,18 @@ orchAddOnEntryCond = (
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Latch chosen root path (for attribution / fill-path tracking)
+// Root-intent handoff to POSITION_STATE
 // 1 = PB_BASE
 // 2 = CONT
-// NOTE: activeBaseType is owned by POSITION_STATE now; do not redeclare here.
+//
+// POSITION_STATE owns:
+// - pbLastFillPath
+// - activeBaseType
+//
+// ORCH owns:
+// - choosing the intended root path before order placement
+// - clearing the latch after actual root fill is observed
 // ─────────────────────────────────────────────────────────────────────────────
-var int   baseIntentLatch  = 0
 var float pbBaseRmRefLevel = na
 var float pbBaseRmRefAtr   = na
 var float pbBaseRmFillAtr  = na
@@ -2313,9 +2375,10 @@ orchRootBothNow = (
      orchContBaseEntryCond
      and orchPbBaseReady)
 
+// PB root still disabled for current debug path, as per current project state
 //orchRootPbWins = (
 //     orchPbBaseReady)
-orchRootPbWins = false //dedbug
+orchRootPbWins = false //debug
 
 orchRootContWins = (
      orchContBaseEntryCond
@@ -2397,13 +2460,26 @@ if orchAddOnEntryCond
     lastAddEntryRefPrice := close
 
 
-// Detect actual root fill (0 → >0)
+// ─────────────────────────────────────────────────────────────────────────────
+// 4) Clear root-intent latch after actual root fill
+//
+// IMPORTANT:
+// POSITION_STATE runs earlier in the file and consumes baseIntentLatch
+// on the root fill bar. ORCH only clears it afterward.
+// Do NOT write activeBaseType here.
+// ─────────────────────────────────────────────────────────────────────────────
 baseFilledNow = (
      (strategy.position_size > 0)
      and (strategy.position_size[1] == 0))
 
 if baseFilledNow
-    activeBaseType := baseIntentLatch
+    pbBaseRmFillAtr := (
+         (not na(pbBaseRmRefAtr))
+         and (pbBaseRmRefAtr > 0.0)
+         and (not na(pbBaseRmRefLevel))
+         ? ((strategy.position_avg_price - pbBaseRmRefLevel) / pbBaseRmRefAtr)
+         : na)
+
     baseIntentLatch := 0
 
 // =======[BLOCK: ENTRY_ORCH_END]=========
@@ -2881,8 +2957,15 @@ if pbJustClosed
 
 
 // PB_BASE ALL trades – accumulate net P&L by reclaim margin (ATR)
-// gated by activeBaseType==1 so CONT doesn’t pollute PB_BASE bins
-if pbJustClosed and (activeBaseType == 1)
+// IMPORTANT:
+// activeBaseType may already be reset to 0 on the close bar by POSITION_STATE,
+// so use close-time root ownership from the prior bar when pbJustClosed.
+closeRootType = (
+     pbJustClosed
+     ? activeBaseType[1]
+     : activeBaseType)
+
+if pbJustClosed and (closeRootType == 1)
     mAll = pbBaseRmFillAtr
     pnlNow = pbExitPnlUsdNow
 
@@ -3058,6 +3141,11 @@ if addFilledNow
 
 // ─────────────────────────────────────────────────────────────────────────────
 // F) LOSS ATTRIBUTION (single authoritative pass)
+// Housekeeping rules:
+// - use pbLastFillPath for LAST-FILL attribution
+// - use closeRootType for ROOT ownership on close events
+// - never use current-bar activeBaseType directly on pbJustClosed because
+//   POSITION_STATE may already have reset it to 0
 // ─────────────────────────────────────────────────────────────────────────────
 if pbIsLoss
     lossAbsUsd = math.abs(pbExitPnlUsdNow)
@@ -3068,6 +3156,13 @@ if pbIsLoss
     k = mxIndex(eIdx, xIdx)
     array.set(lossMxCnt, k, array.get(lossMxCnt, k) + 1)
     array.set(lossMxUsd, k, array.get(lossMxUsd, k) + lossAbsUsd)
+
+    closeRootTypeNow = (
+         pbJustClosed
+         ? activeBaseType[1]
+         : activeBaseType)
+
+    closeLastFillPathNow = pbLastFillPath
 
     isLossHardSl = (
          (pbExitReasonFinal == "STOP/TRAIL")
@@ -3086,7 +3181,13 @@ if pbIsLoss
                 lossHardSlLowMfeCnt += 1
                 lossHardSlLowMfeUsd += lossAbsUsd
 
-                if activeBaseType == 1
+                // LAST-FILL ADDON takes precedence for path attribution.
+                // Otherwise attribute by ROOT ownership at close.
+                if closeLastFillPathNow == "PB_ADDON"
+                    lowMfeHardSlAfterAddCnt += 1
+                    lowMfeHardSlAfterAddUsd += lossAbsUsd
+
+                else if closeRootTypeNow == 1
                     lowMfeHardSlAfterBaseCnt += 1
                     lowMfeHardSlAfterBaseUsd += lossAbsUsd
 
@@ -3111,7 +3212,7 @@ if pbIsLoss
                             rmCnt5 += 1
                             rmUsd5 += lossAbsUsd
 
-                else if activeBaseType == 2
+                else if closeRootTypeNow == 2
                     lowMfeHardSlAfterContCnt += 1
                     lowMfeHardSlAfterContUsd += lossAbsUsd
 
@@ -3135,12 +3236,10 @@ if pbIsLoss
                         else
                             contHardSlSep_gt40 += 1
 
-                else if pbLastFillPath == "PB_ADDON"
-                    lowMfeHardSlAfterAddCnt += 1
-                    lowMfeHardSlAfterAddUsd += lossAbsUsd
                 else
                     lowMfeHardSlAfterUnkCnt += 1
                     lowMfeHardSlAfterUnkUsd += lossAbsUsd
+
             else
                 lossHardSlHighMfeCnt += 1
                 lossHardSlHighMfeUsd += lossAbsUsd
