@@ -3253,12 +3253,12 @@ pbAvgGiveback = (
 
 
 // =======[BLOCK: TABLES_BEGIN]=======
-// Tables (housekeeping pass 3)
+// Tables (clean rebuild)
 // Right side:
-//   - top-right    = CORE + PROFIT (always visible)
-//   - bottom-right = LOSS matrix
+//   - top-right    = CORE + PROFIT
+//   - middle-right = LOSS matrix
 // Left side:
-//   - paged DIAG table with consolidated pages
+//   - paged DIAG table
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DIAG page selector
@@ -3357,7 +3357,7 @@ f_entryLabel(eIdx) =>
        : "UNK")
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Profit accumulators (stateful, table-owned)
+// Profit accumulators (table-owned)
 // idx: 0=PB_BASE, 1=CONT, 2=ADD, 3=UNK
 // ─────────────────────────────────────────────────────────────────────────────
 var float[] profUsd = array.new_float(4, 0.0)
@@ -3369,17 +3369,9 @@ f_profIdxFromPath() =>
        : (pbLastFillPath == "PB_ADDON") ? 2
        : 3)
 
-f_profLabel(i) =>
-    (
-         (i == 0) ? "PB_BASE"
-       : (i == 1) ? "CONT"
-       : (i == 2) ? "ADD"
-       : "UNK")
-
 if pbJustClosed and pbIsWin and (not na(pbExitPnlUsdNow))
-    i = f_profIdxFromPath()
-    array.set(profUsd, i, array.get(profUsd, i) + pbExitPnlUsdNow)
-
+    profIdx = f_profIdxFromPath()
+    array.set(profUsd, profIdx, array.get(profUsd, profIdx) + pbExitPnlUsdNow)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tables
@@ -3438,11 +3430,12 @@ f_row(_tbl, _r, _k, _v) =>
     f_cell(_tbl, 1, _r, _v)
     (_r + 1)
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Render tables
 // ─────────────────────────────────────────────────────────────────────────────
-if (barstate.islastconfirmedhistory or barstate.islast)
+shouldRenderTables = (barstate.islastconfirmedhistory or barstate.isrealtime)
+
+if shouldRenderTables
 
     table.clear(tTopRight, 0, 0, 1, 14)
     table.clear(tLoss,     0, 0, 5, 5)
@@ -3471,7 +3464,7 @@ if (barstate.islastconfirmedhistory or barstate.islast)
     rr := f_row(tTopRight, rr, "Profit TOT $",   f_usd(array.get(profUsd, 0) + array.get(profUsd, 1) + array.get(profUsd, 2) + array.get(profUsd, 3)))
 
     // ========================================================================
-    // BOTTOM-RIGHT TABLE — LOSS MATRIX ONLY
+    // MIDDLE-RIGHT TABLE — LOSS MATRIX
     // ========================================================================
     f_hdr(tLoss, 0, 0, "Loss mx")
     f_hdr(tLoss, 1, 0, "SL")
@@ -3480,31 +3473,26 @@ if (barstate.islastconfirmedhistory or barstate.islast)
     f_hdr(tLoss, 4, 0, "EMA")
     f_hdr(tLoss, 5, 0, "TOT")
 
-    // rows 1..4
     for e = 0 to 3
-        rr2 = (1 + e)
+        rr2 = 1 + e
         f_cell(tLoss, 0, rr2, f_entryLabel(e))
         for x = 0 to 3
-            f_cell(tLoss, (1 + x), rr2, f_pair(mxGetCnt(e, x), mxGetUsd(e, x)))
+            f_cell(tLoss, 1 + x, rr2, f_pair(mxGetCnt(e, x), mxGetUsd(e, x)))
         f_cell(tLoss, 5, rr2, f_pair(mxRowCnt(e), mxRowUsd(e)))
 
-    // totals row 5
     f_hdr(tLoss, 0, 5, "TOT")
     for x = 0 to 3
-        f_cell(tLoss, (1 + x), 5, f_pair(mxColCnt(x), mxColUsd(x)))
+        f_cell(tLoss, 1 + x, 5, f_pair(mxColCnt(x), mxColUsd(x)))
     f_cell(tLoss, 5, 5, f_pair(mxAllCnt(), mxAllUsd()))
 
     // ========================================================================
-    // LEFT DIAG TABLE — consolidated pages
+    // LEFT DIAG TABLE — paged
     // ========================================================================
     f_hdr(tDiag, 0, 0, str.format("Diag ({0})", diagPage))
     f_hdr(tDiag, 1, 0, "Value")
 
     r = 1
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: LATE_GATE
-    // ─────────────────────────────────────────────────────────────────────────
     if diagPage == "LATE_GATE"
         minAtrStr = (
              str.tostring(pbLateReclaimMinAtrX100)
@@ -3529,9 +3517,6 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "Blk->PB %",          f_pctFrac_0to1(f_frac(pbBlockToPbCnt, pbBaseBlockCnt)))
         r := f_row(tDiag, r, "Blk->Any %",         f_pctFrac_0to1(f_frac(pbBlockToAnyCnt, pbBaseBlockCnt)))
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: PB_DIAG
-    // ─────────────────────────────────────────────────────────────────────────
     else if diagPage == "PB_DIAG"
         r := f_row(tDiag, r, "PB cand TOT",        f_int(pbBaseCandidateCnt))
         r := f_row(tDiag, r, "PB blocked",         f_int(pbBaseBlockedCnt))
@@ -3552,9 +3537,6 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "SepThr",             f_f2(pbEmaSepAtrMult))
         r := f_row(tDiag, r, "SepPass",            str.tostring(math.abs(emaFast - emaMid) >= (atrSafe * pbEmaSepAtrMult)))
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: ADDON
-    // ─────────────────────────────────────────────────────────────────────────
     else if diagPage == "ADDON"
         r := f_row(tDiag, r, "ADD Fills",          f_int(addFillCnt))
         r := f_row(tDiag, r, "ADD Orig TOT",       f_int(addOriginTotalCnt))
@@ -3575,9 +3557,6 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "Final Cond",         f_int(addFinalCondCnt))
         r := f_row(tDiag, r, "Final/Cand %",       f_pctFrac_0to1(f_frac(addFinalCondCnt, addCandCnt)))
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: RM
-    // ─────────────────────────────────────────────────────────────────────────
     else if diagPage == "RM"
         rmCntTot = (rmCnt0 + rmCnt1 + rmCnt2 + rmCnt3 + rmCnt4 + rmCnt5)
         rmUsdTot = (rmUsd0 + rmUsd1 + rmUsd2 + rmUsd3 + rmUsd4 + rmUsd5)
@@ -3601,31 +3580,28 @@ if (barstate.islastconfirmedhistory or barstate.islast)
         r := f_row(tDiag, r, "PnL >=0.40",         str.format("{0} | {1}", f_int(rmAllCnt5), f_usd(rmAllPnl5)))
         r := f_row(tDiag, r, "PnL TOT",            str.format("{0} | {1}", f_int(rmAllCntTot), f_usd(rmAllPnlTot)))
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PAGE: LOSS_PATHS
-    // ─────────────────────────────────────────────────────────────────────────
     else if diagPage == "LOSS_PATHS"
-        r := f_row(tDiag, r, "Loss ABS TOT$",      f_usd(lossAbsTotalUsd))
-        r := f_row(tDiag, r, "Loss HARD_SL$",      f_usd(lossHardSlUsd))
-        r := f_row(tDiag, r, "Loss PP_FLOOR$",     f_usd(lossPpFloorUsd))
-        r := f_row(tDiag, r, "Loss PP_TRAIL$",     f_usd(lossPpTrailUsd))
-        r := f_row(tDiag, r, "Loss GRAD_BE$",      f_usd(lossGradBeUsd))
-        r := f_row(tDiag, r, "Loss EMA_FLIP$",     f_usd(lossEmaFlipUsd))
-        r := f_row(tDiag, r, "Loss IMP_DEC$",      f_usd(lossImpDecayUsd))
-        r := f_row(tDiag, r, "SL LowMFE cnt|$",    f_pair(lossHardSlLowMfeCnt,  lossHardSlLowMfeUsd))
-        r := f_row(tDiag, r, "SL HighMFE cnt|$",   f_pair(lossHardSlHighMfeCnt, lossHardSlHighMfeUsd))
-        r := f_row(tDiag, r, "LowMFE SL PB_BASE",  f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
-        r := f_row(tDiag, r, "LowMFE SL CONT",     f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
-        r := f_row(tDiag, r, "LowMFE SL ADD",      f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
-        r := f_row(tDiag, r, "LowMFE SL UNK",      f_pair(lowMfeHardSlAfterUnkCnt,  lowMfeHardSlAfterUnkUsd))
-        r := f_row(tDiag, r, "CONT LMFE SL Cnt",   f_int(contHardSlCnt))
-        r := f_row(tDiag, r, "LMFE Str <0.10",     f_int(contHardSlStretch_lt10))
-        r := f_row(tDiag, r, "LMFE Str 0.10-0.20", f_int(contHardSlStretch_10_20))
-        r := f_row(tDiag, r, "LMFE Str 0.20-0.40", f_int(contHardSlStretch_20_40))
-        r := f_row(tDiag, r, "LMFE Str >0.40",     f_int(contHardSlStretch_gt40))
-        r := f_row(tDiag, r, "LMFE Sep <0.20",     f_int(contHardSlSep_lt20))
-        r := f_row(tDiag, r, "LMFE Sep 0.20-0.40", f_int(contHardSlSep_20_40))
-        r := f_row(tDiag, r, "LMFE Sep >0.40",     f_int(contHardSlSep_gt40))
+        r := f_row(tDiag, r, "Loss ABS TOT$",           f_usd(lossAbsTotalUsd))
+        r := f_row(tDiag, r, "Loss HARD_SL$",           f_usd(lossHardSlUsd))
+        r := f_row(tDiag, r, "Loss PP_FLOOR$",          f_usd(lossPpFloorUsd))
+        r := f_row(tDiag, r, "Loss PP_TRAIL$",          f_usd(lossPpTrailUsd))
+        r := f_row(tDiag, r, "Loss GRAD_BE$",           f_usd(lossGradBeUsd))
+        r := f_row(tDiag, r, "Loss EMA_FLIP$",          f_usd(lossEmaFlipUsd))
+        r := f_row(tDiag, r, "Loss IMP_DEC$",           f_usd(lossImpDecayUsd))
+        r := f_row(tDiag, r, "SL LowMFE cnt|$",         f_pair(lossHardSlLowMfeCnt,  lossHardSlLowMfeUsd))
+        r := f_row(tDiag, r, "SL HighMFE cnt|$",        f_pair(lossHardSlHighMfeCnt, lossHardSlHighMfeUsd))
+        r := f_row(tDiag, r, "LowMFE SL PB_BASE",       f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
+        r := f_row(tDiag, r, "LowMFE SL CONT",          f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
+        r := f_row(tDiag, r, "LowMFE SL ADD",           f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
+        r := f_row(tDiag, r, "LowMFE SL UNK",           f_pair(lowMfeHardSlAfterUnkCnt,  lowMfeHardSlAfterUnkUsd))
+        r := f_row(tDiag, r, "CONT LowMFE HARD_SL",     f_int(contHardSlCnt))
+        r := f_row(tDiag, r, "CONT LMFE Str <0.10",     f_int(contHardSlStretch_lt10))
+        r := f_row(tDiag, r, "CONT LMFE Str 0.10-0.20", f_int(contHardSlStretch_10_20))
+        r := f_row(tDiag, r, "CONT LMFE Str 0.20-0.40", f_int(contHardSlStretch_20_40))
+        r := f_row(tDiag, r, "CONT LMFE Str >0.40",     f_int(contHardSlStretch_gt40))
+        r := f_row(tDiag, r, "CONT LMFE Sep <0.20",     f_int(contHardSlSep_lt20))
+        r := f_row(tDiag, r, "CONT LMFE Sep 0.20-0.40", f_int(contHardSlSep_20_40))
+        r := f_row(tDiag, r, "CONT LMFE Sep >0.40",     f_int(contHardSlSep_gt40))
 
 // =======[BLOCK: TABLES_END]=========
 
