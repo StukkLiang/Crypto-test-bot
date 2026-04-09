@@ -2890,19 +2890,27 @@ var float rmAllPnl3 = 0.0
 var float rmAllPnl4 = 0.0
 var float rmAllPnl5 = 0.0
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ADDON diagnostics (FILL-based)
 // ─────────────────────────────────────────────────────────────────────────────
-var int addFillCnt          = 0
-var int addWeakSepFillCnt   = 0
-var int addWeakSepTradeCnt  = 0
-var int addWeakSepLossCnt   = 0
+var int  addFillCnt           = 0
+var int  addWeakSepFillCnt    = 0
+var int  addWeakSepTradeCnt   = 0
+var int  addWeakSepLossCnt    = 0
 var bool tradeHadAddonWeakSep = false
+var bool tradeHadAddonAny     = false
 
 // NEW: add-on origin diagnostics based on ACTUAL fills
 var int addAfterBaseFillCnt = 0
 var int addAfterContFillCnt = 0
+
+// NET PnL diagnostics
+// Root rows are mutually exclusive.
+// ADDON Trade Net is overlapping diagnostic view:
+// it sums whole-trade net PnL for trades that used >=1 add-on.
+var float netPnlPbRoot      = 0.0
+var float netPnlContRoot    = 0.0
+var float netPnlAddonTrade  = 0.0
 
 addOriginTotalCnt = (
      addAfterBaseFillCnt
@@ -3164,6 +3172,16 @@ pbIsLoss = (
 if pbJustClosed
     pbClosedTrades += 1
 
+    // Closed-trade NET PnL rollups
+    if not na(pbExitPnlUsdNow)
+        if closeRootType == 1
+            netPnlPbRoot += pbExitPnlUsdNow
+        else if closeRootType == 2
+            netPnlContRoot += pbExitPnlUsdNow
+
+        if tradeHadAddonAny
+            netPnlAddonTrade += pbExitPnlUsdNow
+
     // Trade-level weak-sep add-on diagnostics
     if tradeHadAddonWeakSep
         addWeakSepTradeCnt += 1
@@ -3171,6 +3189,7 @@ if pbJustClosed
             addWeakSepLossCnt += 1
 
     tradeHadAddonWeakSep := false
+    tradeHadAddonAny     := false
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3182,6 +3201,7 @@ addFilledNow = (
 
 if addFilledNow
     addFillCnt += 1
+    tradeHadAddonAny := true
 
     if activeBaseType == 1
         addAfterBaseFillCnt += 1
@@ -3406,10 +3426,10 @@ pbAvgGiveback = (
 
 
 // =======[BLOCK: TABLES_BEGIN]=======
-// Tables (clean rebuild)
+// Clean consolidated tables
 // Right side:
-//   - top-right    = CORE + PROFIT
-//   - middle-right = LOSS matrix
+//   - middle-right = CORE / PERFORMANCE
+//   - bottom-right = LOSS ATTRIBUTION matrix
 // Left side:
 //   - paged DIAG table
 
@@ -3419,7 +3439,7 @@ pbAvgGiveback = (
 diagPage = input.string(
      title   = "DIAG Page",
      defval  = "PB_DIAG",
-     options = ["LATE_GATE", "PB_DIAG", "ADDON", "RM", "LOSS_PATHS"],
+     options = ["LATE_GATE", "PB_DIAG", "ADDON", "RM", "CONT_LOWMFE"],
      group   = grpDiag)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3510,8 +3530,9 @@ f_entryLabel(eIdx) =>
        : "UNK")
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Profit accumulators (table-owned)
+// Profit attribution accumulators (WIN attribution only)
 // idx: 0=PB_BASE, 1=CONT, 2=ADD, 3=UNK
+// NOTE: win attribution is NOT the same thing as net PnL.
 // ─────────────────────────────────────────────────────────────────────────────
 var float[] profUsd = array.new_float(4, 0.0)
 
@@ -3532,7 +3553,7 @@ if pbJustClosed and pbIsWin and (not na(pbExitPnlUsdNow))
 var table tTopRight = table.new(
      position     = position.middle_right,
      columns      = 2,
-     rows         = 15,
+     rows         = 16,
      frame_color  = color.black,
      frame_width  = 1,
      border_color = color.black,
@@ -3590,41 +3611,58 @@ shouldRenderTables = (barstate.islastconfirmedhistory or barstate.isrealtime)
 
 if shouldRenderTables
 
-    table.clear(tTopRight, 0, 0, 1, 14)
+    table.clear(tTopRight, 0, 0, 1, 15)
     table.clear(tLoss,     0, 0, 5, 5)
     table.clear(tDiag,     0, 0, 1, 21)
 
+    winAttribTot = (
+         array.get(profUsd, 0)
+         + array.get(profUsd, 1)
+         + array.get(profUsd, 2)
+         + array.get(profUsd, 3))
+
+    winRateNow = (
+         strategy.closedtrades > 0
+         ? (strategy.wintrades / strategy.closedtrades)
+         : na)
+
+    pfNow = (
+         math.abs(strategy.grossloss) > 0
+         ? (strategy.grossprofit / math.abs(strategy.grossloss))
+         : na)
+
     // ========================================================================
-    // TOP-RIGHT TABLE — CORE + PROFIT
+    // MIDDLE-RIGHT TABLE — CORE / PERFORMANCE
     // ========================================================================
-    f_hdr(tTopRight, 0, 0, "CORE / PROFIT")
+    f_hdr(tTopRight, 0, 0, "CORE / PERFORMANCE")
     f_hdr(tTopRight, 1, 0, "Value")
 
     rr = 1
-    rr := f_row(tTopRight, rr, "Damaged%",       f_pctFrac_0to1(pbDamagedRateFrac))
-    rr := f_row(tTopRight, rr, "Avg gvb%",       f_pctPts(pbAvgGiveback))
-    rr := f_row(tTopRight, rr, "PB_BASE Fills",  f_int(pbPullbackFillCnt))
-    rr := f_row(tTopRight, rr, "CONT Fills",     f_int(contFillCnt))
-    rr := f_row(tTopRight, rr, "ADD Fills",      f_int(addFillCnt))
-    rr := f_row(tTopRight, rr, "LowMFE SL PB",   f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
-    rr := f_row(tTopRight, rr, "LowMFE SL CONT", f_pair(lowMfeHardSlAfterContCnt, lowMfeHardSlAfterContUsd))
-    rr := f_row(tTopRight, rr, "LowMFE SL ADD",  f_pair(lowMfeHardSlAfterAddCnt,  lowMfeHardSlAfterAddUsd))
-    rr := f_row(tTopRight, rr, "Dmg gvb$",       f_usd(pbDmgGivebackUsd))
-    rr := f_row(tTopRight, rr, "PB Profit $",    f_usd(array.get(profUsd, 0)))
-    rr := f_row(tTopRight, rr, "CONT Profit $",  f_usd(array.get(profUsd, 1)))
-    rr := f_row(tTopRight, rr, "ADD Profit $",   f_usd(array.get(profUsd, 2)))
-    rr := f_row(tTopRight, rr, "UNK Profit $",   f_usd(array.get(profUsd, 3)))
-    rr := f_row(tTopRight, rr, "Profit TOT $",   f_usd(array.get(profUsd, 0) + array.get(profUsd, 1) + array.get(profUsd, 2) + array.get(profUsd, 3)))
+    rr := f_row(tTopRight, rr, "Net Strategy PnL",  f_usd(strategy.netprofit))
+    rr := f_row(tTopRight, rr, "Max DD $",          f_usd(strategy.max_drawdown))
+    rr := f_row(tTopRight, rr, "Total Trades",      f_int(strategy.closedtrades))
+    rr := f_row(tTopRight, rr, "Win Rate",          f_pctFrac_0to1(winRateNow))
+    rr := f_row(tTopRight, rr, "Profit Factor",     f_f2(pfNow))
+    rr := f_row(tTopRight, rr, "PB_BASE Fills",     f_int(pbPullbackFillCnt))
+    rr := f_row(tTopRight, rr, "CONT Fills",        f_int(contFillCnt))
+    rr := f_row(tTopRight, rr, "ADD Fills",         f_int(addFillCnt))
+    rr := f_row(tTopRight, rr, "PB Win Attrib $",   f_usd(array.get(profUsd, 0)))
+    rr := f_row(tTopRight, rr, "CONT Win Attrib $", f_usd(array.get(profUsd, 1)))
+    rr := f_row(tTopRight, rr, "ADD Win Attrib $",  f_usd(array.get(profUsd, 2)))
+    rr := f_row(tTopRight, rr, "Win Attrib Σ $",    f_usd(winAttribTot))
+    rr := f_row(tTopRight, rr, "PB Root Net $",     f_usd(netPnlPbRoot))
+    rr := f_row(tTopRight, rr, "CONT Root Net $",   f_usd(netPnlContRoot))
+    rr := f_row(tTopRight, rr, "ADDON Trade Net $", f_usd(netPnlAddonTrade))
 
     // ========================================================================
-    // MIDDLE-RIGHT TABLE — LOSS MATRIX
+    // BOTTOM-RIGHT TABLE — LOSS ATTRIBUTION
     // ========================================================================
-    f_hdr(tLoss, 0, 0, "Loss mx")
+    f_hdr(tLoss, 0, 0, "Loss Attribution")
     f_hdr(tLoss, 1, 0, "SL")
     f_hdr(tLoss, 2, 0, "FLOOR")
     f_hdr(tLoss, 3, 0, "TRAIL")
     f_hdr(tLoss, 4, 0, "EMA")
-    f_hdr(tLoss, 5, 0, "TOT")
+    f_hdr(tLoss, 5, 0, "ATTRIB")
 
     for e = 0 to 3
         rr2 = 1 + e
@@ -3633,7 +3671,7 @@ if shouldRenderTables
             f_cell(tLoss, 1 + x, rr2, f_pair(mxGetCnt(e, x), mxGetUsd(e, x)))
         f_cell(tLoss, 5, rr2, f_pair(mxRowCnt(e), mxRowUsd(e)))
 
-    f_hdr(tLoss, 0, 5, "TOT")
+    f_hdr(tLoss, 0, 5, "Attrib Σ")
     for x = 0 to 3
         f_cell(tLoss, 1 + x, 5, f_pair(mxColCnt(x), mxColUsd(x)))
     f_cell(tLoss, 5, 5, f_pair(mxAllCnt(), mxAllUsd()))
@@ -3736,14 +3774,7 @@ if shouldRenderTables
         r := f_row(tDiag, r, "PnL >=0.40",         str.format("{0} | {1}", f_int(rmAllCnt5), f_usd(rmAllPnl5)))
         r := f_row(tDiag, r, "PnL TOT",            str.format("{0} | {1}", f_int(rmAllCntTot), f_usd(rmAllPnlTot)))
 
-    else if diagPage == "LOSS_PATHS"
-        r := f_row(tDiag, r, "Loss ABS TOT$",           f_usd(lossAbsTotalUsd))
-        r := f_row(tDiag, r, "Loss HARD_SL$",           f_usd(lossHardSlUsd))
-        r := f_row(tDiag, r, "Loss PP_FLOOR$",          f_usd(lossPpFloorUsd))
-        r := f_row(tDiag, r, "Loss PP_TRAIL$",          f_usd(lossPpTrailUsd))
-        r := f_row(tDiag, r, "Loss GRAD_BE$",           f_usd(lossGradBeUsd))
-        r := f_row(tDiag, r, "Loss EMA_FLIP$",          f_usd(lossEmaFlipUsd))
-        r := f_row(tDiag, r, "Loss IMP_DEC$",           f_usd(lossImpDecayUsd))
+    else if diagPage == "CONT_LOWMFE"
         r := f_row(tDiag, r, "SL LowMFE cnt|$",         f_pair(lossHardSlLowMfeCnt,  lossHardSlLowMfeUsd))
         r := f_row(tDiag, r, "SL HighMFE cnt|$",        f_pair(lossHardSlHighMfeCnt, lossHardSlHighMfeUsd))
         r := f_row(tDiag, r, "LowMFE SL PB_BASE",       f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
