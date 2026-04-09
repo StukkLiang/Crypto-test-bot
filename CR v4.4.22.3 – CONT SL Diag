@@ -379,6 +379,18 @@ contLen = input.int(
      minval = 5,
      group  = grpCont)
 
+contUseStretchGuard = input.bool(
+     true,
+     "CONT: Enable Stretch Guard",
+     group = grpCont)
+
+contMaxStretchAtr = input.float(
+     1.50,
+     "CONT: Max Stretch Above Fast EMA (ATR)",
+     step   = 0.05,
+     minval = 0.05,
+     group  = grpCont)
+
 // DEV override
 forceEnableCont = true
 
@@ -2114,11 +2126,17 @@ orchContBaseSetupOk = (
      and (not midEmaDriftChurn))
 
 // CONT quality gate
+// CONT quality gate
 contFastSlopeAtr = f_slopeAtr(emaFast, slopeBars, atrSafe)
 
 contSepAtr = (
      ((not na(atrSafe)) and (atrSafe > 0.0))
      ? (math.abs(emaFast - emaMid) / atrSafe)
+     : na)
+
+contStretchAtr = (
+     ((not na(atrSafe)) and (atrSafe > 0.0))
+     ? ((close - emaFast) / atrSafe)
      : na)
 
 contSlopeMinAtr = 0.05
@@ -2137,10 +2155,46 @@ contQualityOk = (
      or contSepStrong
      or vReversalCONT)
 
-orchContBaseEntryCond = (
+contStretchOk = (
+          (not contUseStretchGuard)
+          or (
+               (not na(contStretchAtr))
+               and (contStretchAtr <= contMaxStretchAtr)
+          ))
+
+orchContBasePreStretchCond = (
      orchContBaseSetupOk
      and contSignalNow
      and contQualityOk)
+
+orchContBaseEntryCond = (
+     orchContBasePreStretchCond
+     and contStretchOk)
+
+var int contPreStretchCandCnt = 0
+var int contStretchBlockedCnt = 0
+var int contStretchPassedCnt  = 0
+
+contPreStretchNow = (
+     orchContBasePreStretchCond
+     and (not orchContBasePreStretchCond[1]))
+
+contStretchBlockedNow = (
+     contPreStretchNow
+     and (not contStretchOk))
+
+contStretchPassedNow = (
+     contPreStretchNow
+     and contStretchOk)
+
+if contPreStretchNow
+    contPreStretchCandCnt += 1
+
+if contStretchBlockedNow
+    contStretchBlockedCnt += 1
+
+if contStretchPassedNow
+    contStretchPassedCnt += 1
 
 // PB setup is computed in PB_ENTRY.
 // Flat-state ownership belongs here in ORCH.
@@ -3635,6 +3689,9 @@ if shouldRenderTables
         r := f_row(tDiag, r, "Sep/ATR",            f_f2((atrSafe > 0.0) ? (math.abs(emaFast - emaMid) / atrSafe) : na))
         r := f_row(tDiag, r, "SepThr",             f_f2(pbEmaSepAtrMult))
         r := f_row(tDiag, r, "SepPass",            str.tostring(math.abs(emaFast - emaMid) >= (atrSafe * pbEmaSepAtrMult)))
+        r := f_row(tDiag, r, "CONT StrGd|Max",     str.format("{0} | {1}", str.tostring(contUseStretchGuard), f_f2(contMaxStretchAtr)))
+        r := f_row(tDiag, r, "CONT PreStr Cand",   f_int(contPreStretchCandCnt))
+        r := f_row(tDiag, r, "CONT Str Blocked",   f_int(contStretchBlockedCnt))
 
     else if diagPage == "ADDON"
         r := f_row(tDiag, r, "ADD Fills",          f_int(addFillCnt))
