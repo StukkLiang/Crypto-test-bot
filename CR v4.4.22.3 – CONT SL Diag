@@ -2904,6 +2904,9 @@ var bool tradeHadAddonAny     = false
 var int addAfterBaseFillCnt = 0
 var int addAfterContFillCnt = 0
 
+//PB_BASE trade count
+var float netPnlPbRootTrade = 0.0
+
 // NET PnL diagnostics
 // Root rows are mutually exclusive.
 // ADDON Trade Net is overlapping diagnostic view:
@@ -2911,6 +2914,9 @@ var int addAfterContFillCnt = 0
 var float netPnlPbRoot      = 0.0
 var float netPnlContRoot    = 0.0
 var float netPnlAddonTrade  = 0.0
+var float netPnlContOnlyTrade = 0.0
+var int   contOnlyTradeCnt    = 0
+var int addonTradeCnt = 0
 
 addOriginTotalCnt = (
      addAfterBaseFillCnt
@@ -3174,13 +3180,22 @@ if pbJustClosed
 
     // Closed-trade NET PnL rollups
     if not na(pbExitPnlUsdNow)
-        if closeRootType == 1
-            netPnlPbRoot += pbExitPnlUsdNow
-        else if closeRootType == 2
-            netPnlContRoot += pbExitPnlUsdNow
 
         if tradeHadAddonAny
             netPnlAddonTrade += pbExitPnlUsdNow
+
+        else if closeRootType == 2
+            netPnlContOnlyTrade += pbExitPnlUsdNow
+
+    else if closeRootType == 1
+        netPnlPbRootTrade += pbExitPnlUsdNow
+        // Mutually exclusive trade partition for table math
+        if tradeHadAddonAny
+            netPnlAddonTrade += pbExitPnlUsdNow
+            addonTradeCnt += 1
+        else
+            netPnlContOnlyTrade += pbExitPnlUsdNow
+            contOnlyTradeCnt += 1
 
     // Trade-level weak-sep add-on diagnostics
     if tradeHadAddonWeakSep
@@ -3190,7 +3205,6 @@ if pbJustClosed
 
     tradeHadAddonWeakSep := false
     tradeHadAddonAny     := false
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NEW: add-on fill detection (counts FILLS)
@@ -3638,21 +3652,19 @@ if shouldRenderTables
     f_hdr(tTopRight, 1, 0, "Value")
 
     rr = 1
-    rr := f_row(tTopRight, rr, "Net Strategy PnL",  f_usd(strategy.netprofit))
+    rr := f_row(tTopRight, rr, "Strategy Net $", f_usd(strategy.netprofit))
+    rr := f_row(tTopRight, rr, "PB-root Net $",     f_usd(netPnlPbRootTrade))
+    rr := f_row(tTopRight, rr, "CONT-only Net $",   f_usd(netPnlContOnlyTrade))
+    rr := f_row(tTopRight, rr, "ADDON-used Net $",  f_usd(netPnlAddonTrade))
+    rr := f_row(tTopRight, rr, "Partition Sum $", f_usd(netPnlPbRootTrade + netPnlContOnlyTrade + netPnlAddonTrade))
     rr := f_row(tTopRight, rr, "Max DD $",          f_usd(strategy.max_drawdown))
     rr := f_row(tTopRight, rr, "Total Trades",      f_int(strategy.closedtrades))
     rr := f_row(tTopRight, rr, "Win Rate",          f_pctFrac_0to1(winRateNow))
     rr := f_row(tTopRight, rr, "Profit Factor",     f_f2(pfNow))
-    rr := f_row(tTopRight, rr, "PB_BASE Fills",     f_int(pbPullbackFillCnt))
+    rr := f_row(tTopRight, rr, "PB BASE Fills",     f_int(pbPullbackFillCnt))
     rr := f_row(tTopRight, rr, "CONT Fills",        f_int(contFillCnt))
     rr := f_row(tTopRight, rr, "ADD Fills",         f_int(addFillCnt))
-    rr := f_row(tTopRight, rr, "PB Win Attrib $",   f_usd(array.get(profUsd, 0)))
-    rr := f_row(tTopRight, rr, "CONT Win Attrib $", f_usd(array.get(profUsd, 1)))
-    rr := f_row(tTopRight, rr, "ADD Win Attrib $",  f_usd(array.get(profUsd, 2)))
     rr := f_row(tTopRight, rr, "Win Attrib Σ $",    f_usd(winAttribTot))
-    rr := f_row(tTopRight, rr, "PB Root Net $",     f_usd(netPnlPbRoot))
-    rr := f_row(tTopRight, rr, "CONT Root Net $",   f_usd(netPnlContRoot))
-    rr := f_row(tTopRight, rr, "ADDON Trade Net $", f_usd(netPnlAddonTrade))
 
     // ========================================================================
     // BOTTOM-RIGHT TABLE — LOSS ATTRIBUTION
