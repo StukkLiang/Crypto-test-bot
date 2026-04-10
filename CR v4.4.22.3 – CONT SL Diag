@@ -2904,19 +2904,19 @@ var bool tradeHadAddonAny     = false
 var int addAfterBaseFillCnt = 0
 var int addAfterContFillCnt = 0
 
-//PB_BASE trade count
-var float netPnlPbRootTrade = 0.0
+// Closed-trade net P&L partition (MUTUALLY EXCLUSIVE)
+// Each closed trade must go into exactly one bucket using
+// strategy.closedtrades.profit(lastClosedIdx):
+//   PB_BASE close path | CONT close path | PB_ADDON close path | UNK
+var float netPnlPbClose   = 0.0
+var float netPnlContClose = 0.0
+var float netPnlAddClose  = 0.0
+var float netPnlUnkClose  = 0.0
 
-// NET PnL diagnostics
-// Root rows are mutually exclusive.
-// ADDON Trade Net is overlapping diagnostic view:
-// it sums whole-trade net PnL for trades that used >=1 add-on.
-var float netPnlPbRoot      = 0.0
-var float netPnlContRoot    = 0.0
-var float netPnlAddonTrade  = 0.0
-var float netPnlContOnlyTrade = 0.0
-var int   contOnlyTradeCnt    = 0
-var int addonTradeCnt = 0
+var int   pbCloseTradeCnt   = 0
+var int   contCloseTradeCnt = 0
+var int   addCloseTradeCnt  = 0
+var int   unkCloseTradeCnt  = 0
 
 addOriginTotalCnt = (
      addAfterBaseFillCnt
@@ -3012,17 +3012,40 @@ pbIsDamagedWinner = (
      and (pbExitPctNow <= dmgExitCeilPct))
 
 
-// Align pbExitPnlUsdNow to TradingView authoritative closedtrades.profit()
+// ─────────────────────────────────────────────────────────────
+// CLOSED TRADE PARTITION (authoritative PnL source)
+// Strategy Net = PB + CONT + ADDON + UNK
+// ─────────────────────────────────────────────────────────────
+
 if pbJustClosed
-    lastIdxTv = strategy.closedtrades - 1
-    tvNetUsd = (
-         (lastIdxTv >= 0)
-         ? strategy.closedtrades.profit(lastIdxTv)
-         : na)
+
+    int lastIdxTv = strategy.closedtrades - 1
+    float tvNetUsd =
+          (lastIdxTv >= 0)
+             ? strategy.closedtrades.profit(lastIdxTv)
+             : na
 
     if not na(tvNetUsd)
-        pbExitPnlUsdNow := tvNetUsd
 
+        // ---- PB bucket
+        ifcloseBucket == 1
+            netPnlPbClose += tvNetUsd
+            pbCloseCnt += 1
+
+        // ---- CONT bucket
+        else if closeBucket == 2
+            netPnlContClose += tvNetUsd
+            contCloseCnt += 1
+
+        // ---- ADDON bucket
+        else if closeBucket == 3
+            netPnlAddonClose += tvNetUsd
+            addonCloseCnt += 1
+
+        // ---- UNKNOWN (should stay zero)
+        else
+            netPnlUnkClose += tvNetUsd
+            unkCloseCnt += 1
 
 // PB_BASE ALL trades – accumulate net P&L by reclaim margin (ATR)
 // IMPORTANT:
@@ -3165,7 +3188,14 @@ exitTypeIndex() =>
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E) WIN / LOSS EVENTS
+// E) WIN / LOSS EVENTS + CLOSED-TRADE NET P&L PARTITION
+//
+// IMPORTANT:
+// Summary reconciliation uses CLOSE PATH, not forced CONT-root ownership.
+// Identity:
+//   Strategy Net Profit = PB Net + CONT Net + ADDON Net + UNK Net
+// Each closed trade goes into exactly one bucket using TradingView's
+// authoritative strategy.closedtrades.profit().
 // ─────────────────────────────────────────────────────────────────────────────
 pbIsWin = (
      pbJustClosed
@@ -3178,24 +3208,31 @@ pbIsLoss = (
 if pbJustClosed
     pbClosedTrades += 1
 
-    // Closed-trade NET PnL rollups
-    if not na(pbExitPnlUsdNow)
+    int lastIdxTv2 = strategy.closedtrades - 1
+    float tvNetUsd2 = (
+          (lastIdxTv2 >= 0)
+               ? strategy.closedtrades.profit(lastIdxTv2)
+               : na)
 
-        if tradeHadAddonAny
-            netPnlAddonTrade += pbExitPnlUsdNow
 
-        else if closeRootType == 2
-            netPnlContOnlyTrade += pbExitPnlUsdNow
+    if not na(tvNetUsd2)
+        closePathNow = pbLastFillPath
 
-    else if closeRootType == 1
-        netPnlPbRootTrade += pbExitPnlUsdNow
-        // Mutually exclusive trade partition for table math
-        if tradeHadAddonAny
-            netPnlAddonTrade += pbExitPnlUsdNow
-            addonTradeCnt += 1
+        if closePathNow == "PB_BASE"
+            netPnlPbClose += tvNetUsd2
+            pbCloseTradeCnt += 1
+
+        else if closePathNow == "CONT"
+            netPnlContClose += tvNetUsd2
+            contCloseTradeCnt += 1
+
+        else if closePathNow == "PB_ADDON"
+            netPnlAddClose += tvNetUsd2
+            addCloseTradeCnt += 1
+
         else
-            netPnlContOnlyTrade += pbExitPnlUsdNow
-            contOnlyTradeCnt += 1
+            netPnlUnkClose += tvNetUsd2
+            unkCloseTradeCnt += 1
 
     // Trade-level weak-sep add-on diagnostics
     if tradeHadAddonWeakSep
@@ -3420,7 +3457,7 @@ if pbBaseFilledNow
          ? math.abs(rsiVal - 50.0)
          : na)
 
-// =======[BLOCK: METRICS_END]=========
+// =======[BLOCK: METRICS_END]=======
 
 
 // =======[BLOCK: DERIVED_METRICS_BEGIN]=======
@@ -3651,19 +3688,25 @@ if shouldRenderTables
     f_hdr(tTopRight, 0, 0, "CORE / PERFORMANCE")
     f_hdr(tTopRight, 1, 0, "Value")
 
+    closePathSum = (
+         netPnlPbClose
+         + netPnlContClose
+         + netPnlAddClose
+         + netPnlUnkClose)
+
     rr = 1
-    rr := f_row(tTopRight, rr, "Strategy Net $", f_usd(strategy.netprofit))
-    rr := f_row(tTopRight, rr, "PB-root Net $",     f_usd(netPnlPbRootTrade))
-    rr := f_row(tTopRight, rr, "CONT-only Net $",   f_usd(netPnlContOnlyTrade))
-    rr := f_row(tTopRight, rr, "ADDON-used Net $",  f_usd(netPnlAddonTrade))
-    rr := f_row(tTopRight, rr, "Partition Sum $", f_usd(netPnlPbRootTrade + netPnlContOnlyTrade + netPnlAddonTrade))
+    rr := f_row(tTopRight, rr, "Strategy Net $",    f_usd(strategy.netprofit))
+    rr := f_row(tTopRight, rr, "PB Net $",          f_usd(netPnlPbClose))
+    rr := f_row(tTopRight, rr, "CONT Net $",        f_usd(netPnlContClose))
+    rr := f_row(tTopRight, rr, "ADDON Net $",       f_usd(netPnlAddClose))
+    rr := f_row(tTopRight, rr, "UNK Net $",         f_usd(netPnlUnkClose))
+    rr := f_row(tTopRight, rr, "Partition Sum $",   f_usd(closePathSum))
     rr := f_row(tTopRight, rr, "Max DD $",          f_usd(strategy.max_drawdown))
     rr := f_row(tTopRight, rr, "Total Trades",      f_int(strategy.closedtrades))
     rr := f_row(tTopRight, rr, "Win Rate",          f_pctFrac_0to1(winRateNow))
     rr := f_row(tTopRight, rr, "Profit Factor",     f_f2(pfNow))
-    rr := f_row(tTopRight, rr, "PB BASE Fills",     f_int(pbPullbackFillCnt))
-    rr := f_row(tTopRight, rr, "CONT Fills",        f_int(contFillCnt))
-    rr := f_row(tTopRight, rr, "ADD Fills",         f_int(addFillCnt))
+    rr := f_row(tTopRight, rr, "PB / CONT / ADD Cls", f_int(pbCloseTradeCnt) + " / " + f_int(contCloseTradeCnt) + " / " + f_int(addCloseTradeCnt))
+    rr := f_row(tTopRight, rr, "UNK Close Trades",  f_int(unkCloseTradeCnt))
     rr := f_row(tTopRight, rr, "Win Attrib Σ $",    f_usd(winAttribTot))
 
     // ========================================================================
@@ -3802,7 +3845,7 @@ if shouldRenderTables
         r := f_row(tDiag, r, "CONT LMFE Sep 0.20-0.40", f_int(contHardSlSep_20_40))
         r := f_row(tDiag, r, "CONT LMFE Sep >0.40",     f_int(contHardSlSep_gt40))
 
-// =======[BLOCK: TABLES_END]=========
+// =======[BLOCK: TABLES_END]=======
 
 
 // =======[BLOCK: DEBUG_MARKERS_BEGIN]=======
