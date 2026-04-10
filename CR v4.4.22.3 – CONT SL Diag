@@ -3012,50 +3012,41 @@ pbIsDamagedWinner = (
      and (pbExitPctNow <= dmgExitCeilPct))
 
 
-// ─────────────────────────────────────────────────────────────
-// CLOSED TRADE PARTITION (authoritative PnL source)
-// Strategy Net = PB + CONT + ADDON + UNK
-// ─────────────────────────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────────────────────────────
+// CLOSED-TRADE NORMALIZATION + PARTITION
+//
+// One authoritative source only:
+//   strategy.closedtrades.profit(lastClosedIdx)
+//
+// Design rule:
+//   fetch once -> store in pbExitPnlUsdNow -> reuse everywhere
+//
+// Identity:
+//   Strategy Net Profit = PB Net + CONT Net + ADDON Net + UNK Net
+// Each closed trade must go into exactly one bucket.
+// ─────────────────────────────────────────────────────────────────────────────
 if pbJustClosed
-
-    int lastIdxTv = strategy.closedtrades - 1
-    float tvNetUsd =
-          (lastIdxTv >= 0)
-             ? strategy.closedtrades.profit(lastIdxTv)
-             : na
+    lastIdxTv = strategy.closedtrades - 1
+    tvNetUsd = (
+         (lastIdxTv >= 0)
+         ? strategy.closedtrades.profit(lastIdxTv)
+         : na)
 
     if not na(tvNetUsd)
+        pbExitPnlUsdNow := tvNetUsd
 
-        // ---- PB bucket
-        ifcloseBucket == 1
-            netPnlPbClose += tvNetUsd
-            pbCloseCnt += 1
 
-        // ---- CONT bucket
-        else if closeBucket == 2
-            netPnlContClose += tvNetUsd
-            contCloseCnt += 1
-
-        // ---- ADDON bucket
-        else if closeBucket == 3
-            netPnlAddonClose += tvNetUsd
-            addonCloseCnt += 1
-
-        // ---- UNKNOWN (should stay zero)
-        else
-            netPnlUnkClose += tvNetUsd
-            unkCloseCnt += 1
-
-// PB_BASE ALL trades – accumulate net P&L by reclaim margin (ATR)
-// IMPORTANT:
-// activeBaseType may already be reset to 0 on the close bar by POSITION_STATE,
-// so use close-time root ownership from the prior bar when pbJustClosed.
+// Close-time root ownership.
+// Do not use current-bar activeBaseType directly on pbJustClosed,
+// because POSITION_STATE may already have reset it to 0.
 closeRootType = (
      pbJustClosed
      ? activeBaseType[1]
      : activeBaseType)
 
+
+// PB_BASE ALL trades – accumulate NET P&L by reclaim margin (ATR)
+// gated by closeRootType == 1 so CONT does not pollute PB_BASE bins
 if pbJustClosed and (closeRootType == 1)
     mAll = pbBaseRmFillAtr
     pnlNow = pbExitPnlUsdNow
@@ -3152,8 +3143,7 @@ else if (not pbInPos)
 // D) LOSS ATTRIBUTION MATRIX (Entry × Exit)
 // EntryType: 0=PB_BASE, 1=CONT, 2=PB_ADDON, 3=UNK
 // ExitType : 0=SL, 1=FLOOR, 2=TRAIL, 3=EMA, 4=OTHER
-// NOTE: This still attributes by LAST FILL PATH, not root origin.
-// That is intentional for now so tables remain compatible.
+// LAST-FILL attribution by design.
 // ─────────────────────────────────────────────────────────────────────────────
 int lossMxCols = 5
 int lossMxRows = 4
@@ -3188,53 +3178,37 @@ exitTypeIndex() =>
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E) WIN / LOSS EVENTS + CLOSED-TRADE NET P&L PARTITION
-//
-// IMPORTANT:
-// Summary reconciliation uses CLOSE PATH, not forced CONT-root ownership.
-// Identity:
-//   Strategy Net Profit = PB Net + CONT Net + ADDON Net + UNK Net
-// Each closed trade goes into exactly one bucket using TradingView's
-// authoritative strategy.closedtrades.profit().
+// E) WIN / LOSS EVENTS + CLOSED-TRADE PARTITION
 // ─────────────────────────────────────────────────────────────────────────────
 pbIsWin = (
      pbJustClosed
+     and (not na(pbExitPnlUsdNow))
      and (pbExitPnlUsdNow > 0))
 
 pbIsLoss = (
      pbJustClosed
+     and (not na(pbExitPnlUsdNow))
      and (pbExitPnlUsdNow < 0))
 
 if pbJustClosed
     pbClosedTrades += 1
 
-    int lastIdxTv2 = strategy.closedtrades - 1
-    float tvNetUsd2 = (
-          (lastIdxTv2 >= 0)
-               ? strategy.closedtrades.profit(lastIdxTv2)
-               : na)
+    closePathNow = pbLastFillPath
 
-
-    if not na(tvNetUsd2)
-        closePathNow = pbLastFillPath
-
+    if not na(pbExitPnlUsdNow)
         if closePathNow == "PB_BASE"
-            netPnlPbClose += tvNetUsd2
+            netPnlPbClose += pbExitPnlUsdNow
             pbCloseTradeCnt += 1
-
         else if closePathNow == "CONT"
-            netPnlContClose += tvNetUsd2
+            netPnlContClose += pbExitPnlUsdNow
             contCloseTradeCnt += 1
-
         else if closePathNow == "PB_ADDON"
-            netPnlAddClose += tvNetUsd2
+            netPnlAddClose += pbExitPnlUsdNow
             addCloseTradeCnt += 1
-
         else
-            netPnlUnkClose += tvNetUsd2
+            netPnlUnkClose += pbExitPnlUsdNow
             unkCloseTradeCnt += 1
 
-    // Trade-level weak-sep add-on diagnostics
     if tradeHadAddonWeakSep
         addWeakSepTradeCnt += 1
         if pbIsLoss
@@ -3243,12 +3217,13 @@ if pbJustClosed
     tradeHadAddonWeakSep := false
     tradeHadAddonAny     := false
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// NEW: add-on fill detection (counts FILLS)
+// ADD-ON FILL DETECTION (counts FILLS)
 // ─────────────────────────────────────────────────────────────────────────────
 addFilledNow = (
      posIncreasedNow
-     and pbLastFillPath == "PB_ADDON")
+     and (pbLastFillPath == "PB_ADDON"))
 
 if addFilledNow
     addFillCnt += 1
@@ -3259,7 +3234,6 @@ if addFilledNow
     else if activeBaseType == 2
         addAfterContFillCnt += 1
 
-    // fill-level weak-sep count
     if tradeHadAddonWeakSep
         addWeakSepFillCnt += 1
 
@@ -3456,6 +3430,7 @@ if pbBaseFilledNow
          not na(rsiVal)
          ? math.abs(rsiVal - 50.0)
          : na)
+
 
 // =======[BLOCK: METRICS_END]=======
 
