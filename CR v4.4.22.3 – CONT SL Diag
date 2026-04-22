@@ -2844,6 +2844,113 @@ if pbJustClosed
 // ─────────────────────────────────────────────────────────────────────────────
 
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE 1 ROOT LEDGER (behavior‑neutral)
+// Authoritative close ledger based ONLY on closed trade profit and root snapshot
+// This must NOT change trading behavior.
+// ─────────────────────────────────────────────────────────────────────────────
+var int   rootCloseCntTotal = 0
+var int   rootCloseCntPb    = 0
+var int   rootCloseCntCont  = 0
+var int   rootCloseCntUnk   = 0
+
+var float rootNetPb   = 0.0
+var float rootNetCont = 0.0
+var float rootNetUnk  = 0.0
+
+// helper: safe close root snapshot (Stage 1 isolated name to avoid collisions)
+closeRootTypeStage1 = (
+     pbJustClosed
+     ? activeBaseType[1]
+     : activeBaseType)
+
+// authoritative closed trade profit
+pbExitPnlUsdNow_stage1 = (
+     pbJustClosed and (strategy.closedtrades > 0)
+     ? strategy.closedtrades.profit(strategy.closedtrades - 1)
+     : na)
+
+if pbJustClosed and not na(pbExitPnlUsdNow_stage1)
+
+    rootCloseCntTotal += 1
+
+    if closeRootTypeStage1 == 1
+        rootCloseCntPb   += 1
+        rootNetPb        += pbExitPnlUsdNow_stage1
+    else if closeRootTypeStage1 == 2
+        rootCloseCntCont += 1
+        rootNetCont      += pbExitPnlUsdNow_stage1
+    else
+        rootCloseCntUnk  += 1
+        rootNetUnk       += pbExitPnlUsdNow_stage1
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAGE 2 PATH LEDGER (diagnostic only)
+// Separate from root ownership. Uses last fill path at close.
+// This must NOT replace root accounting.
+// ─────────────────────────────────────────────────────────────────────────────
+var int   pathCloseCntPbBase = 0
+var int   pathCloseCntCont   = 0
+var int   pathCloseCntAddon  = 0
+var int   pathCloseCntUnk    = 0
+
+var float pathNetPbBase = 0.0
+var float pathNetCont   = 0.0
+var float pathNetAddon  = 0.0
+var float pathNetUnk    = 0.0
+
+closeLastFillPathStage2 = pbLastFillPath
+pbExitPnlUsdNow_stage2 = (
+     pbJustClosed and (strategy.closedtrades > 0)
+     ? strategy.closedtrades.profit(strategy.closedtrades - 1)
+     : na)
+
+if pbJustClosed and not na(pbExitPnlUsdNow_stage2)
+
+    if closeLastFillPathStage2 == "PB_BASE"
+        pathCloseCntPbBase += 1
+        pathNetPbBase      += pbExitPnlUsdNow_stage2
+    else if closeLastFillPathStage2 == "CONT"
+        pathCloseCntCont   += 1
+        pathNetCont        += pbExitPnlUsdNow_stage2
+    else if closeLastFillPathStage2 == "PB_ADDON"
+        pathCloseCntAddon  += 1
+        pathNetAddon       += pbExitPnlUsdNow_stage2
+    else
+        pathCloseCntUnk    += 1
+        pathNetUnk         += pbExitPnlUsdNow_stage2
+
+rootNetSumStage2 = (
+     rootNetPb
+     + rootNetCont
+     + rootNetUnk)
+
+rootTradeSumStage2 = (
+     rootCloseCntPb
+     + rootCloseCntCont
+     + rootCloseCntUnk)
+
+rootNetGapStage2 = (
+     strategy.netprofit
+     - rootNetSumStage2)
+
+rootTradeGapStage2 = (
+     strategy.closedtrades
+     - rootTradeSumStage2)
+
+pathNetSumStage2 = (
+     pathNetPbBase
+     + pathNetCont
+     + pathNetAddon
+     + pathNetUnk)
+
+pathTradeSumStage2 = (
+     pathCloseCntPbBase
+     + pathCloseCntCont
+     + pathCloseCntAddon
+     + pathCloseCntUnk)
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ROOT FILL COMPATIBILITY
 // PB root fill now happens when flat → > in position and fill path = PB_BASE
@@ -2890,33 +2997,19 @@ var float rmAllPnl3 = 0.0
 var float rmAllPnl4 = 0.0
 var float rmAllPnl5 = 0.0
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ADDON diagnostics (FILL-based)
 // ─────────────────────────────────────────────────────────────────────────────
-var int  addFillCnt           = 0
-var int  addWeakSepFillCnt    = 0
-var int  addWeakSepTradeCnt   = 0
-var int  addWeakSepLossCnt    = 0
+var int addFillCnt          = 0
+var int addWeakSepFillCnt   = 0
+var int addWeakSepTradeCnt  = 0
+var int addWeakSepLossCnt   = 0
 var bool tradeHadAddonWeakSep = false
-var bool tradeHadAddonAny     = false
 
 // NEW: add-on origin diagnostics based on ACTUAL fills
 var int addAfterBaseFillCnt = 0
 var int addAfterContFillCnt = 0
-
-// Closed-trade net P&L partition (MUTUALLY EXCLUSIVE)
-// Each closed trade must go into exactly one bucket using
-// strategy.closedtrades.profit(lastClosedIdx):
-//   PB_BASE close path | CONT close path | PB_ADDON close path | UNK
-var float netPnlPbClose   = 0.0
-var float netPnlContClose = 0.0
-var float netPnlAddClose  = 0.0
-var float netPnlUnkClose  = 0.0
-
-var int   pbCloseTradeCnt   = 0
-var int   contCloseTradeCnt = 0
-var int   addCloseTradeCnt  = 0
-var int   unkCloseTradeCnt  = 0
 
 addOriginTotalCnt = (
      addAfterBaseFillCnt
@@ -3012,19 +3105,7 @@ pbIsDamagedWinner = (
      and (pbExitPctNow <= dmgExitCeilPct))
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CLOSED-TRADE NORMALIZATION + PARTITION
-//
-// One authoritative source only:
-//   strategy.closedtrades.profit(lastClosedIdx)
-//
-// Design rule:
-//   fetch once -> store in pbExitPnlUsdNow -> reuse everywhere
-//
-// Identity:
-//   Strategy Net Profit = PB Net + CONT Net + ADDON Net + UNK Net
-// Each closed trade must go into exactly one bucket.
-// ─────────────────────────────────────────────────────────────────────────────
+// Align pbExitPnlUsdNow to TradingView authoritative closedtrades.profit()
 if pbJustClosed
     lastIdxTv = strategy.closedtrades - 1
     tvNetUsd = (
@@ -3036,17 +3117,15 @@ if pbJustClosed
         pbExitPnlUsdNow := tvNetUsd
 
 
-// Close-time root ownership.
-// Do not use current-bar activeBaseType directly on pbJustClosed,
-// because POSITION_STATE may already have reset it to 0.
+// PB_BASE ALL trades – accumulate net P&L by reclaim margin (ATR)
+// IMPORTANT:
+// activeBaseType may already be reset to 0 on the close bar by POSITION_STATE,
+// so use close-time root ownership from the prior bar when pbJustClosed.
 closeRootType = (
      pbJustClosed
      ? activeBaseType[1]
      : activeBaseType)
 
-
-// PB_BASE ALL trades – accumulate NET P&L by reclaim margin (ATR)
-// gated by closeRootType == 1 so CONT does not pollute PB_BASE bins
 if pbJustClosed and (closeRootType == 1)
     mAll = pbBaseRmFillAtr
     pnlNow = pbExitPnlUsdNow
@@ -3143,7 +3222,8 @@ else if (not pbInPos)
 // D) LOSS ATTRIBUTION MATRIX (Entry × Exit)
 // EntryType: 0=PB_BASE, 1=CONT, 2=PB_ADDON, 3=UNK
 // ExitType : 0=SL, 1=FLOOR, 2=TRAIL, 3=EMA, 4=OTHER
-// LAST-FILL attribution by design.
+// NOTE: This still attributes by LAST FILL PATH, not root origin.
+// That is intentional for now so tables remain compatible.
 // ─────────────────────────────────────────────────────────────────────────────
 int lossMxCols = 5
 int lossMxRows = 4
@@ -3178,62 +3258,44 @@ exitTypeIndex() =>
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// E) WIN / LOSS EVENTS + CLOSED-TRADE PARTITION
+// E) WIN / LOSS EVENTS
 // ─────────────────────────────────────────────────────────────────────────────
 pbIsWin = (
      pbJustClosed
-     and (not na(pbExitPnlUsdNow))
      and (pbExitPnlUsdNow > 0))
 
 pbIsLoss = (
      pbJustClosed
-     and (not na(pbExitPnlUsdNow))
      and (pbExitPnlUsdNow < 0))
 
 if pbJustClosed
     pbClosedTrades += 1
 
-    closePathNow = pbLastFillPath
-
-    if not na(pbExitPnlUsdNow)
-        if closePathNow == "PB_BASE"
-            netPnlPbClose += pbExitPnlUsdNow
-            pbCloseTradeCnt += 1
-        else if closePathNow == "CONT"
-            netPnlContClose += pbExitPnlUsdNow
-            contCloseTradeCnt += 1
-        else if closePathNow == "PB_ADDON"
-            netPnlAddClose += pbExitPnlUsdNow
-            addCloseTradeCnt += 1
-        else
-            netPnlUnkClose += pbExitPnlUsdNow
-            unkCloseTradeCnt += 1
-
+    // Trade-level weak-sep add-on diagnostics
     if tradeHadAddonWeakSep
         addWeakSepTradeCnt += 1
         if pbIsLoss
             addWeakSepLossCnt += 1
 
     tradeHadAddonWeakSep := false
-    tradeHadAddonAny     := false
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ADD-ON FILL DETECTION (counts FILLS)
+// NEW: add-on fill detection (counts FILLS)
 // ─────────────────────────────────────────────────────────────────────────────
 addFilledNow = (
      posIncreasedNow
-     and (pbLastFillPath == "PB_ADDON"))
+     and pbLastFillPath == "PB_ADDON")
 
 if addFilledNow
     addFillCnt += 1
-    tradeHadAddonAny := true
 
     if activeBaseType == 1
         addAfterBaseFillCnt += 1
     else if activeBaseType == 2
         addAfterContFillCnt += 1
 
+    // fill-level weak-sep count
     if tradeHadAddonWeakSep
         addWeakSepFillCnt += 1
 
@@ -3431,8 +3493,7 @@ if pbBaseFilledNow
          ? math.abs(rsiVal - 50.0)
          : na)
 
-
-// =======[BLOCK: METRICS_END]=======
+// =======[BLOCK: METRICS_END]=========
 
 
 // =======[BLOCK: DERIVED_METRICS_BEGIN]=======
@@ -3452,10 +3513,10 @@ pbAvgGiveback = (
 
 
 // =======[BLOCK: TABLES_BEGIN]=======
-// Clean consolidated tables
+// Tables (clean rebuild)
 // Right side:
-//   - middle-right = CORE / PERFORMANCE
-//   - bottom-right = LOSS ATTRIBUTION matrix
+//   - top-right    = CORE + PROFIT
+//   - middle-right = LOSS matrix
 // Left side:
 //   - paged DIAG table
 
@@ -3465,7 +3526,7 @@ pbAvgGiveback = (
 diagPage = input.string(
      title   = "DIAG Page",
      defval  = "PB_DIAG",
-     options = ["LATE_GATE", "PB_DIAG", "ADDON", "RM", "CONT_LOWMFE"],
+     options = ["LATE_GATE", "PB_DIAG", "ADDON", "RM", "LOSS_PATHS"],
      group   = grpDiag)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3556,30 +3617,12 @@ f_entryLabel(eIdx) =>
        : "UNK")
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Profit attribution accumulators (WIN attribution only)
-// idx: 0=PB_BASE, 1=CONT, 2=ADD, 3=UNK
-// NOTE: win attribution is NOT the same thing as net PnL.
-// ─────────────────────────────────────────────────────────────────────────────
-var float[] profUsd = array.new_float(4, 0.0)
-
-f_profIdxFromPath() =>
-    (
-         (pbLastFillPath == "PB_BASE")  ? 0
-       : (pbLastFillPath == "CONT")     ? 1
-       : (pbLastFillPath == "PB_ADDON") ? 2
-       : 3)
-
-if pbJustClosed and pbIsWin and (not na(pbExitPnlUsdNow))
-    profIdx = f_profIdxFromPath()
-    array.set(profUsd, profIdx, array.get(profUsd, profIdx) + pbExitPnlUsdNow)
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Tables
 // ─────────────────────────────────────────────────────────────────────────────
 var table tTopRight = table.new(
      position     = position.middle_right,
      columns      = 2,
-     rows         = 16,
+     rows         = 20,
      frame_color  = color.black,
      frame_width  = 1,
      border_color = color.black,
@@ -3637,62 +3680,46 @@ shouldRenderTables = (barstate.islastconfirmedhistory or barstate.isrealtime)
 
 if shouldRenderTables
 
-    table.clear(tTopRight, 0, 0, 1, 15)
+    table.clear(tTopRight, 0, 0, 1, 19)
     table.clear(tLoss,     0, 0, 5, 5)
     table.clear(tDiag,     0, 0, 1, 21)
 
-    winAttribTot = (
-         array.get(profUsd, 0)
-         + array.get(profUsd, 1)
-         + array.get(profUsd, 2)
-         + array.get(profUsd, 3))
-
-    winRateNow = (
-         strategy.closedtrades > 0
-         ? (strategy.wintrades / strategy.closedtrades)
-         : na)
-
-    pfNow = (
-         math.abs(strategy.grossloss) > 0
-         ? (strategy.grossprofit / math.abs(strategy.grossloss))
-         : na)
-
     // ========================================================================
-    // MIDDLE-RIGHT TABLE — CORE / PERFORMANCE
+    // TOP-RIGHT TABLE — CORE / ROOT LEDGER + PATH NETS
     // ========================================================================
-    f_hdr(tTopRight, 0, 0, "CORE / PERFORMANCE")
+    f_hdr(tTopRight, 0, 0, "CORE / ROOT LEDGER")
     f_hdr(tTopRight, 1, 0, "Value")
 
-    closePathSum = (
-         netPnlPbClose
-         + netPnlContClose
-         + netPnlAddClose
-         + netPnlUnkClose)
-
     rr = 1
-    rr := f_row(tTopRight, rr, "Strategy Net $",    f_usd(strategy.netprofit))
-    rr := f_row(tTopRight, rr, "PB Net $",          f_usd(netPnlPbClose))
-    rr := f_row(tTopRight, rr, "CONT Net $",        f_usd(netPnlContClose))
-    rr := f_row(tTopRight, rr, "ADDON Net $",       f_usd(netPnlAddClose))
-    rr := f_row(tTopRight, rr, "UNK Net $",         f_usd(netPnlUnkClose))
-    rr := f_row(tTopRight, rr, "Partition Sum $",   f_usd(closePathSum))
-    rr := f_row(tTopRight, rr, "Max DD $",          f_usd(strategy.max_drawdown))
-    rr := f_row(tTopRight, rr, "Total Trades",      f_int(strategy.closedtrades))
-    rr := f_row(tTopRight, rr, "Win Rate",          f_pctFrac_0to1(winRateNow))
-    rr := f_row(tTopRight, rr, "Profit Factor",     f_f2(pfNow))
-    rr := f_row(tTopRight, rr, "PB / CONT / ADD Cls", f_int(pbCloseTradeCnt) + " / " + f_int(contCloseTradeCnt) + " / " + f_int(addCloseTradeCnt))
-    rr := f_row(tTopRight, rr, "UNK Close Trades",  f_int(unkCloseTradeCnt))
-    rr := f_row(tTopRight, rr, "Win Attrib Σ $",    f_usd(winAttribTot))
+    rr := f_row(tTopRight, rr, "Strategy Net",     f_usd(strategy.netprofit))
+    rr := f_row(tTopRight, rr, "TV Closed Trades", f_int(strategy.closedtrades))
+    rr := f_row(tTopRight, rr, "ROOT Close Total", f_int(rootCloseCntTotal))
+    rr := f_row(tTopRight, rr, "PB ROOT Closes",   f_int(rootCloseCntPb))
+    rr := f_row(tTopRight, rr, "CONT ROOT Closes", f_int(rootCloseCntCont))
+    rr := f_row(tTopRight, rr, "UNK ROOT Closes",  f_int(rootCloseCntUnk))
+    rr := f_row(tTopRight, rr, "PB ROOT Net",      f_usd(rootNetPb))
+    rr := f_row(tTopRight, rr, "CONT ROOT Net",    f_usd(rootNetCont))
+    rr := f_row(tTopRight, rr, "UNK ROOT Net",     f_usd(rootNetUnk))
+    rr := f_row(tTopRight, rr, "Root Net Sum",     f_usd(rootNetSumStage2))
+    rr := f_row(tTopRight, rr, "Root Trade Sum",   f_int(rootTradeSumStage2))
+    rr := f_row(tTopRight, rr, "Root Net Gap",     f_usd(rootNetGapStage2))
+    rr := f_row(tTopRight, rr, "Root Trade Gap",   f_int(rootTradeGapStage2))
+    rr := f_row(tTopRight, rr, "PB_BASE PATH Net", f_usd(pathNetPbBase))
+    rr := f_row(tTopRight, rr, "CONT PATH Net",    f_usd(pathNetCont))
+    rr := f_row(tTopRight, rr, "ADDON PATH Net",   f_usd(pathNetAddon))
+    rr := f_row(tTopRight, rr, "UNK PATH Net",     f_usd(pathNetUnk))
+    rr := f_row(tTopRight, rr, "PATH Net Sum",     f_usd(pathNetSumStage2))
+    rr := f_row(tTopRight, rr, "PATH Close Sum",   f_int(pathTradeSumStage2))
 
     // ========================================================================
-    // BOTTOM-RIGHT TABLE — LOSS ATTRIBUTION
+    // MIDDLE-RIGHT TABLE — LOSS MATRIX
     // ========================================================================
-    f_hdr(tLoss, 0, 0, "Loss Attribution")
+    f_hdr(tLoss, 0, 0, "Loss mx")
     f_hdr(tLoss, 1, 0, "SL")
     f_hdr(tLoss, 2, 0, "FLOOR")
     f_hdr(tLoss, 3, 0, "TRAIL")
     f_hdr(tLoss, 4, 0, "EMA")
-    f_hdr(tLoss, 5, 0, "ATTRIB")
+    f_hdr(tLoss, 5, 0, "TOT")
 
     for e = 0 to 3
         rr2 = 1 + e
@@ -3701,7 +3728,7 @@ if shouldRenderTables
             f_cell(tLoss, 1 + x, rr2, f_pair(mxGetCnt(e, x), mxGetUsd(e, x)))
         f_cell(tLoss, 5, rr2, f_pair(mxRowCnt(e), mxRowUsd(e)))
 
-    f_hdr(tLoss, 0, 5, "Attrib Σ")
+    f_hdr(tLoss, 0, 5, "TOT")
     for x = 0 to 3
         f_cell(tLoss, 1 + x, 5, f_pair(mxColCnt(x), mxColUsd(x)))
     f_cell(tLoss, 5, 5, f_pair(mxAllCnt(), mxAllUsd()))
@@ -3804,7 +3831,14 @@ if shouldRenderTables
         r := f_row(tDiag, r, "PnL >=0.40",         str.format("{0} | {1}", f_int(rmAllCnt5), f_usd(rmAllPnl5)))
         r := f_row(tDiag, r, "PnL TOT",            str.format("{0} | {1}", f_int(rmAllCntTot), f_usd(rmAllPnlTot)))
 
-    else if diagPage == "CONT_LOWMFE"
+    else if diagPage == "LOSS_PATHS"
+        r := f_row(tDiag, r, "Loss ABS TOT$",           f_usd(lossAbsTotalUsd))
+        r := f_row(tDiag, r, "Loss HARD_SL$",           f_usd(lossHardSlUsd))
+        r := f_row(tDiag, r, "Loss PP_FLOOR$",          f_usd(lossPpFloorUsd))
+        r := f_row(tDiag, r, "Loss PP_TRAIL$",          f_usd(lossPpTrailUsd))
+        r := f_row(tDiag, r, "Loss GRAD_BE$",           f_usd(lossGradBeUsd))
+        r := f_row(tDiag, r, "Loss EMA_FLIP$",          f_usd(lossEmaFlipUsd))
+        r := f_row(tDiag, r, "Loss IMP_DEC$",           f_usd(lossImpDecayUsd))
         r := f_row(tDiag, r, "SL LowMFE cnt|$",         f_pair(lossHardSlLowMfeCnt,  lossHardSlLowMfeUsd))
         r := f_row(tDiag, r, "SL HighMFE cnt|$",        f_pair(lossHardSlHighMfeCnt, lossHardSlHighMfeUsd))
         r := f_row(tDiag, r, "LowMFE SL PB_BASE",       f_pair(lowMfeHardSlAfterBaseCnt, lowMfeHardSlAfterBaseUsd))
@@ -3820,7 +3854,7 @@ if shouldRenderTables
         r := f_row(tDiag, r, "CONT LMFE Sep 0.20-0.40", f_int(contHardSlSep_20_40))
         r := f_row(tDiag, r, "CONT LMFE Sep >0.40",     f_int(contHardSlSep_gt40))
 
-// =======[BLOCK: TABLES_END]=======
+// =======[BLOCK: TABLES_END]=========
 
 
 // =======[BLOCK: DEBUG_MARKERS_BEGIN]=======
