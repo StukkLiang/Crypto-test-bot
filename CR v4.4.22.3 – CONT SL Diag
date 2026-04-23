@@ -68,10 +68,10 @@
 
 // =======[BLOCK: STRATEGY_BEGIN]=======
 strategy(
-     title                   = "v4.4.24 – ADDON Ladder Architecture",
-     shorttitle              = "v4.4.24 – ADDON Ladder Architecture",
+     title                   = "CR v4.4.24 – BTC (Audit + ADDON Tuning)",
+     shorttitle              = "CR v4.4.24 – BTC (Audit + ADDON Tuning)",
      overlay                 = true,
-     pyramiding              = 5,      // base + 4 add-ons = 5 total entries allowed
+     pyramiding              = 4,      // 1 root + 3 concurrent add-on slots
      initial_capital         = 10000,
      commission_type         = strategy.commission.percent,
      commission_value        = 0.0,
@@ -520,10 +520,10 @@ addOnRearmAtrMult = input.float(
      group  = grpAddonB)
 
 addOnMaxConcurrent = input.int(
-     4,
+     3,
      "ADDON: Max Concurrent Adds",
      minval = 1,
-     maxval = 10,
+     maxval = 3,
      group  = grpAddonB)
 
 addOnCeilingFastAtrMult = input.float(
@@ -881,7 +881,14 @@ showEntryDebug = input.bool(
 // Entry IDs (split Base / Cont / Add for clean Strategy Report & attribution)
 pbIdBase = "PB_BASE"
 pbIdCont = "PB_CONT"
+
+// Legacy compatibility name kept alive intentionally.
+// New live add-on architecture uses 3 reusable slot IDs below.
 pbIdAdd  = "PB_ADD"
+
+pbIdAdd1 = "PB_ADD_1"
+pbIdAdd2 = "PB_ADD_2"
+pbIdAdd3 = "PB_ADD_3"
 // =======[BLOCK: ENTRY_IDS_END]=========
 
 // =======[BLOCK: INPUTS_END]=========
@@ -1890,15 +1897,12 @@ plotshape(dbgWin and contSignalNow, title="CONT signal", style=shape.triangleup,
 
 // =======[BLOCK: ADDON_SIGNAL_BEGIN]=======
 // Step 3 – Add-On Engine (press winners)
-// Phase A:
-// - add ceiling / extension awareness
-// - reduce concurrent adds via input instead of hardcoded 4
-// - keep compatibility architecture for now
-// - rolling ladder / slot reuse comes later
+// Slot version:
+// - 3 fixed reusable add-on slots
+// - each slot exits independently
+// - slot occupancy is derived from open trade IDs
+// - addOnCount remains available for diagnostics / tables
 
-// ─────────────────────────────────────────
-// ADDON state
-// ─────────────────────────────────────────
 var bool pbAddOnCond = false
 var int  addOnCount  = 0
 
@@ -1918,10 +1922,33 @@ var int addChopOkCnt        = 0
 var int addFinalCondCnt     = 0
 
 // ADDON memory
-var int lastAddOnBar         = na
-var int lastAddTouchBar      = na
-var int lastAddMicroResetBar = na
-var float lastAddEntryRefPrice = na
+var int   lastAddOnBar          = na
+var int   lastAddTouchBar       = na
+var int   lastAddMicroResetBar  = na
+var float lastAddEntryRefPrice  = na
+
+// Fixed slot occupancy state
+f_hasOpenEntryId(_id) =>
+    bool _found = false
+    for _i = 0 to strategy.opentrades - 1
+        if strategy.opentrades.entry_id(_i) == _id
+            _found := true
+    _found
+
+addSlot1Open = f_hasOpenEntryId(pbIdAdd1)
+addSlot2Open = f_hasOpenEntryId(pbIdAdd2)
+addSlot3Open = f_hasOpenEntryId(pbIdAdd3)
+
+addOnCount := (
+     (addSlot1Open ? 1 : 0)
+     + (addSlot2Open ? 1 : 0)
+     + (addSlot3Open ? 1 : 0))
+
+addFirstFreeSlotId = (
+     not addSlot1Open ? pbIdAdd1
+     : not addSlot2Open ? pbIdAdd2
+     : not addSlot3Open ? pbIdAdd3
+     : "")
 
 // Reset memory when flat
 if not pbInPos
@@ -2039,9 +2066,10 @@ addCandNow = (
      enableAddOns
  and pbInPos)
 
-// Concurrent room gate (input-driven; compatibility version still uses addOnCount)
+// Room gate now uses slot availability
 addRoomOk = (
-     addOnCount < addOnMaxConcurrent)
+     addOnCount < addOnMaxConcurrent
+ and (addFirstFreeSlotId != ""))
 
 addCooldownOk = (
      not inAddOnCooldown)
@@ -2052,57 +2080,56 @@ addChopOk = (
 if addCandNow
     addCandCnt += 1
 
-    if bigTrend
-        addBigTrendOkCnt += 1
+if addCandNow and trendUp and bullStack
+    addBigTrendOkCnt += 1
 
-        if hasRealImpulse
-            addImpulseOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse
+    addImpulseOkCnt += 1
 
-            if emaSepOkAddon
-                addSepOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn)
+    addSepOkCnt += 1
 
-                if addOnTouchedRecently
-                    addTouchRecentOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently
+    addTouchRecentOkCnt += 1
 
-                    if addOnReclaimOk
-                        addReclaimOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently and addOnReclaimOk
+    addReclaimOkCnt += 1
 
-                        if addOnProfitOk
-                            addProfitOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently and addOnReclaimOk and addOnProfitOk
+    addProfitOkCnt += 1
 
-                            if addOnMfeOk
-                                addMfeOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently and addOnReclaimOk and addOnProfitOk and addOnMfeOk
+    addMfeOkCnt += 1
 
-                                if addOnCeilingOk
-                                    addCeilingOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently and addOnReclaimOk and addOnProfitOk and addOnMfeOk and addOnCeilingOk
+    addCeilingOkCnt += 1
 
-                                    if addRoomOk
-                                        addRoomOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently and addOnReclaimOk and addOnProfitOk and addOnMfeOk and addOnCeilingOk and addRoomOk
+    addRoomOkCnt += 1
 
-                                        if addCooldownOk
-                                            addCooldownOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently and addOnReclaimOk and addOnProfitOk and addOnMfeOk and addOnCeilingOk and addRoomOk and addCooldownOk
+    addCooldownOkCnt += 1
 
-                                            if addChopOk
-                                                addChopOkCnt += 1
+if addCandNow and trendUp and bullStack and hasRealImpulse and (not midEmaDriftChurn) and addOnTouchedRecently and addOnReclaimOk and addOnProfitOk and addOnMfeOk and addOnCeilingOk and addRoomOk and addCooldownOk and addChopOk
+    addChopOkCnt += 1
 
 pbAddOnCond := (
-     enableAddOns
-     and pbInPos
-     and bigTrend
-     and hasRealImpulse
-     and emaSepOkAddon
-     and addOnTouchedRecently
-     and addOnReclaimOk
-     and addOnProfitOk
-     and addOnMfeOk
-     and addOnCeilingOk
-     and addRoomOk
-     and (not inAddOnCooldown)
-     and (not noTradeChop))
+     addCandNow
+ and trendUp
+ and bullStack
+ and hasRealImpulse
+ and (not midEmaDriftChurn)
+ and addOnTouchedRecently
+ and addOnReclaimOk
+ and addOnProfitOk
+ and addOnMfeOk
+ and addOnCeilingOk
+ and addRoomOk
+ and addCooldownOk
+ and addChopOk)
 
 if pbAddOnCond
     addFinalCondCnt += 1
-
 // =======[BLOCK: ADDON_SIGNAL_END]=========
 
 
@@ -2549,16 +2576,16 @@ if pbBaseBlockedBySepNow
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3) ADDONs (in-position only, compatibility version)
+// 3) ADDONs (in-position only, 3 reusable whole-slot version)
 // NOTE:
-// - single ADDON order id for now
-// - addOnCount / lastAddOnBar are owned by ADDON_SIGNAL
+// - slot availability is computed in ADDON_SIGNAL
+// - pbFillIntent remains path-level only: PB_ADDON
+// - each slot is entered / exited independently
 // ─────────────────────────────────────────────────────────────────────────────
-if orchAddOnEntryCond
+if orchAddOnEntryCond and (addFirstFreeSlotId != "")
     pbFillIntent := "PB_ADDON"
-    strategy.entry(pbIdAdd, strategy.long, comment="Ad Ent")
+    strategy.entry(addFirstFreeSlotId, strategy.long, comment="Ad Ent")
 
-    addOnCount := (addOnCount + 1)
     lastAddOnBar := bar_index
     lastAddEntryRefPrice := close
 
@@ -2773,10 +2800,22 @@ strategy.exit(
      comment    = "C Stp")
 
 strategy.exit(
-     id         = "PB STOP/TRAIL ADDON",
-     from_entry = pbIdAdd,
+     id         = "PB STOP/TRAIL ADDON 1",
+     from_entry = pbIdAdd1,
      stop       = pbFinalStop,
-     comment    = "Ad Stp")
+     comment    = "Ad1 Stp")
+
+strategy.exit(
+     id         = "PB STOP/TRAIL ADDON 2",
+     from_entry = pbIdAdd2,
+     stop       = pbFinalStop,
+     comment    = "Ad2 Stp")
+
+strategy.exit(
+     id         = "PB STOP/TRAIL ADDON 3",
+     from_entry = pbIdAdd3,
+     stop       = pbFinalStop,
+     comment    = "Ad3 Stp")
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2853,13 +2892,17 @@ if impulseDecayClose
     pbExitReasonPending := "IMPULSE_DECAY"
     strategy.close(pbIdBase, comment="PB Ext")
     strategy.close(pbIdCont, comment="C Ext")
-    strategy.close(pbIdAdd,  comment="Ad Ext")
+    strategy.close(pbIdAdd1, comment="Ad1 Ext")
+    strategy.close(pbIdAdd2, comment="Ad2 Ext")
+    strategy.close(pbIdAdd3, comment="Ad3 Ext")
 
 if emaFlipAllowed
     pbExitReasonPending := "EMA_FLIP"
     strategy.close(pbIdBase, comment="PB Ext")
     strategy.close(pbIdCont, comment="C Ext")
-    strategy.close(pbIdAdd,  comment="Ad Ext")
+    strategy.close(pbIdAdd1, comment="Ad1 Ext")
+    strategy.close(pbIdAdd2, comment="Ad2 Ext")
+    strategy.close(pbIdAdd3, comment="Ad3 Ext")
 
 if pbJustClosed
     pbExitReasonLast := pbExitReasonPending
