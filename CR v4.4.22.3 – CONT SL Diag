@@ -2,47 +2,74 @@
 
 // ============================================================================
 // Catch Raise (CR) Strategy
-// Version: v4.4.23.1 – CONT Pre-Breakout Window
+// Version: v4.4.24 – ADDON Ladder Architecture (Phase 3)
 // Symbol: BTCUSD
 // Timeframe: 4H
 //
 // PURPOSE
-// Improve CONT entry timing by allowing qualified entries slightly before the
-// 20-bar breakout, reducing late / overstretched breakout fills.
+// Improve trend capture and reduce full-position losses by implementing
+// laddered ADDON entries and exits using reusable ADDON slots.
 //
 // CONTEXT
-// Current architecture uses CONT as the primary root engine with ADDON
-// pyramiding enabled and PB pullback engine temporarily disabled.
+// Phase 1 and Phase 2 established a stable CONT entry engine and identified
+// late breakout entries as the primary loss driver. Phase 2 improvements
+// optimized the CONT breakout window and entry timing.
 //
-// Phase 1 diagnostics confirmed that CONT entries are the dominant source
-// of losses, while ADDON pyramids generate the majority of strategy profits.
+// Current architecture:
+// CONT  → primary root entry engine
+// ADDON → pyramiding trend expansion
+// PB    → pullback engine (disabled)
 //
-// PHASE 1 FINDINGS
-// • CONT PATH Net is negative while ADDON PATH Net is strongly positive
-// • CONT LowMFE HARD_SL trades dominate loss distribution
-// • Majority of these failures occur at elevated entry stretch
+// PHASE 2 MILESTONE (Locked Baseline)
+// CONT breakout window optimized:
 //
-// OBJECTIVE (Phase 2.1)
-// Add a controlled pre-breakout entry window to improve CONT timing while
-// preserving the existing breakout engine, stretch guard, exits, and overall
-// architecture.
+//     contBreakoutLength = 10
+//
+// Resulting performance:
+//
+// • Trades: 287
+// • Profit Factor: 1.53
+// • Max Drawdown: ~10.5%
+// • Return: ~66%
+//
+// This configuration is the current reference baseline.
+//
+// PHASE 3 OBJECTIVE
+// Introduce a laddered ADDON architecture using three reusable ADDON slots:
+//
+//     ADDON1
+//     ADDON2
+//     ADDON3
+//
+// Entries and exits will be staggered so later ADDON layers can be closed
+// earlier while earlier layers and the CONT root position remain active.
+//
+// This aims to:
+//
+// • reduce full-stop losses
+// • preserve core trend positions
+// • allow ADDON slot reuse during sustained trends
 //
 // RULE
-// This version may change CONT entry timing only. It must not change ADDON
-// logic, PB logic, exit logic, or accounting / diagnostics architecture.
+// Phase 3 changes must not modify:
+//
+// • CONT entry logic
+// • Phase 2 breakout parameters
+// • exit accounting or diagnostic systems
+// • PB engine behavior
 //
 // ROADMAP
-// Phase 1 – CONT SL diagnostics (completed)
-// Phase 2 – CONT entry filtering improvements (current phase)
-// Phase 3 – Laddered ADDON exit / re-entry
+// Phase 1 – CONT SL diagnostics ✔
+// Phase 2 – CONT entry filtering improvements ✔
+// Phase 3 – Laddered ADDON exit / re-entry (current phase)
 // Phase 4 – Progressive ADDON size reduction
 // Phase 5 – Re-enable PB pullback engine
 // ============================================================================
 
 // =======[BLOCK: STRATEGY_BEGIN]=======
 strategy(
-     title                   = "v4.4.22.3.1 – CONT SL Diagnostics",
-     shorttitle              = "v4.4.22.3.1 – CONT SL Diagnostics",
+     title                   = "v4.4.24 – ADDON Ladder Architecture",
+     shorttitle              = "v4.4.24 – ADDON Ladder Architecture",
      overlay                 = true,
      pyramiding              = 5,      // base + 4 add-ons = 5 total entries allowed
      initial_capital         = 10000,
