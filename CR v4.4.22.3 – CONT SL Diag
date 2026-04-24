@@ -1927,6 +1927,11 @@ var int   lastAddTouchBar       = na
 var int   lastAddMicroResetBar  = na
 var float lastAddEntryRefPrice  = na
 
+addTrailActivationPct = input.float(
+     1.0,
+     "ADDON Trail Activation %",
+     step = 0.1)
+
 // Fixed slot occupancy state
 f_hasOpenEntryId(_id) =>
     bool _found = false
@@ -1938,6 +1943,29 @@ f_hasOpenEntryId(_id) =>
 addSlot1Open = f_hasOpenEntryId(pbIdAdd1)
 addSlot2Open = f_hasOpenEntryId(pbIdAdd2)
 addSlot3Open = f_hasOpenEntryId(pbIdAdd3)
+
+// Detect if any slot was just released this bar
+addSlotReleasedNow =
+     (addSlot1Open[1] and not addSlot1Open)
+  or (addSlot2Open[1] and not addSlot2Open)
+  or (addSlot3Open[1] and not addSlot3Open)
+
+var int addSlotReleasedCnt = 0
+var int addRefillCandidateCnt = 0
+var int addRefillFilledCnt = 0
+var int lastAddSlotReleaseBar = na
+
+if addSlotReleasedNow
+    addSlotReleasedCnt += 1
+    lastAddSlotReleaseBar := bar_index
+
+addRefillCandidateNow = (
+     (not na(lastAddSlotReleaseBar))
+     and ((bar_index - lastAddSlotReleaseBar) <= 2)
+     and pbAddOnCond)
+
+if addRefillCandidateNow
+    addRefillCandidateCnt += 1
 
 addOnCount := (
      (addSlot1Open ? 1 : 0)
@@ -2048,6 +2076,12 @@ hasRealImpulse = (
 addOnReclaimOk = (
      close > emaFast)
 
+addOnMfeMomentumBypassOk = (
+     hasRealImpulse
+     and addOnReclaimOk
+     and (not na(fastSlopeAtr_local))
+     and (fastSlopeAtr_local >= 0.12))
+
 // Ceiling / extension gate
 addOnCeilingFastOk = (
      (not na(addOnDistFastAtr))
@@ -2071,8 +2105,10 @@ addRoomOk = (
      addOnCount < addOnMaxConcurrent
  and (addFirstFreeSlotId != ""))
 
+// Allow immediate refill after slot release
 addCooldownOk = (
-     not inAddOnCooldown)
+     not inAddOnCooldown
+     or addSlotReleasedNow)
 
 addChopOk = (
      not noTradeChop)
@@ -2122,7 +2158,7 @@ pbAddOnCond := (
  and addOnTouchedRecently
  and addOnReclaimOk
  and addOnProfitOk
- and addOnMfeOk
+ and (addOnMfeOk or addOnMfeMomentumBypassOk)
  and addOnCeilingOk
  and addRoomOk
  and addCooldownOk
@@ -2586,6 +2622,11 @@ if orchAddOnEntryCond and (addFirstFreeSlotId != "")
     pbFillIntent := "PB_ADDON"
     strategy.entry(addFirstFreeSlotId, strategy.long, comment="Ad Ent")
 
+    if (
+         (not na(lastAddSlotReleaseBar))
+         and ((bar_index - lastAddSlotReleaseBar) <= 2))
+        addRefillFilledCnt += 1
+
     lastAddOnBar := bar_index
     lastAddEntryRefPrice := close
 
@@ -2783,6 +2824,22 @@ pbFinalStop = (
           na(gradBeFloor) ? pbStopWithTrail : gradBeFloor)
      : na)
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 4A) ADDON trail activation gate
+// Style A:
+// - ADDON always keeps shared Hard SL
+// - ADDON only uses shared PP/Floor/Trail/Grad stop after enough MFE
+// ─────────────────────────────────────────────────────────────────────────────
+
+addTrailMfeOk = (
+     pbInPos
+     and (not na(pbMfePct))
+     and (pbMfePct >= addTrailActivationPct))
+
+addAddonFinalStop = (
+     addTrailMfeOk
+     ? pbFinalStop
+     : pbHardSlPrice)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4A) Root-entry stop/trail exits
@@ -2802,19 +2859,19 @@ strategy.exit(
 strategy.exit(
      id         = "PB STOP/TRAIL ADDON 1",
      from_entry = pbIdAdd1,
-     stop       = pbFinalStop,
+     stop       = addAddonFinalStop,
      comment    = "Ad1 Stp")
 
 strategy.exit(
      id         = "PB STOP/TRAIL ADDON 2",
      from_entry = pbIdAdd2,
-     stop       = pbFinalStop,
+     stop       = addAddonFinalStop,
      comment    = "Ad2 Stp")
 
 strategy.exit(
      id         = "PB STOP/TRAIL ADDON 3",
      from_entry = pbIdAdd3,
-     stop       = pbFinalStop,
+     stop       = addAddonFinalStop,
      comment    = "Ad3 Stp")
 
 
